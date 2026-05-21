@@ -20,6 +20,7 @@ code work.
 - `NETWORKS.md`: Shared MLP options and algorithm-specific network defaults.
 - `JAX_FLAX_GUIDE.md`: JAX/Flax mental model, `TrainState`, and gradient-flow rules for agents.
 - `LOGGING_AND_METRICS.md`: Interval logging behavior and next metric TODOs.
+- `EXTENSIBILITY_REVIEW_2026-05-21.md`: Hardcoded defaults/prefixes and extensibility risks.
 - `IMPLEMENTATION_PLAN.md`: Completed work, validation commands, next steps, and pending risks.
 
 ## Agent Rules

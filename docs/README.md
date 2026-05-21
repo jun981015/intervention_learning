@@ -16,6 +16,7 @@
 - `NETWORKS.md`: 공용 MLP 옵션과 알고리즘별 network 기본값
 - `JAX_FLAX_GUIDE.md`: Torch 사용자 관점에서 보는 JAX/Flax, `TrainState`, gradient 흐름
 - `LOGGING_AND_METRICS.md`: interval 평균 로깅 방식과 추가 metric TODO
+- `EXTENSIBILITY_REVIEW_2026-05-21.md`: 현재 hardcoded default/prefix와 확장성 리스크 점검
 - `IMPLEMENTATION_PLAN.md`: 구현 순서와 검증 상태
 - `CONFIG_SCHEMA_DECISIONS.md`: config schema, DAgger v0, intervention/gate, replay sampling 결정 사항
 
