@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+from typing import Any
+
+import flax
+import jax
+import jax.numpy as jnp
+import ml_collections
+import optax
+
+from il.utils.flax_utils import ModuleDict, TrainState, nonpytree_field
+from il.networks.flow import ActorVectorField
+
+
+class BCFlowAgent(flax.struct.PyTreeNode):
+    """Behavior-cloning flow-matching actor.
+
+    This intentionally omits FQL/QC-FQL critic logic.  It is meant to be
+    used as a BC policy component or future intervention-learning actor.
+    """
+
+    rng: Any
+    network: Any
+    config: Any = nonpytree_field()
+
+    def _flatten_batch_actions(self, batch):
+        """Return the action target shape expected by the flow actor."""
+        target_key = self.config.get("target_action_key", "actions")
+        actions = batch[target_key]
+        if actions.ndim == 2:
+            return actions
+        if self.config["action_chunking"]:
+            return jnp.reshape(actions, (actions.shape[0], -1))
+        return actions[..., 0, :]
+
+    def bc_flow_loss(self, batch, grad_params, rng):
+        """Compute flow-matching behavior-cloning loss against dataset actions."""
+        batch_actions = self._flatten_batch_actions(batch)
+        batch_size, action_dim = batch_actions.shape
+        rng, x_rng, t_rng = jax.random.split(rng, 3)
+
+        x_0 = jax.random.normal(x_rng, (batch_size, action_dim))
+        x_1 = batch_actions
+        t = jax.random.uniform(t_rng, (batch_size, 1))
+        x_t = (1 - t) * x_0 + t * x_1
+        vel = x_1 - x_0
+
+        pred = self.network.select("actor_bc_flow")(batch["observations"], x_t, t, params=grad_params)
+
+        if self.config["action_chunking"]:
+            per_dim_loss = jnp.reshape(
+                (pred - vel) ** 2,
+                (batch_size, self.config["horizon_length"], self.config["action_dim"]),
+            )
+            flow_loss = jnp.mean(per_dim_loss * batch["valid"][..., None])
+        else:
+            flow_loss = jnp.mean((pred - vel) ** 2)
+
+        return flow_loss, {
+            "bc_flow_loss": flow_loss,
+            "flow_pred_mean": pred.mean(),
+            "flow_vel_mean": vel.mean(),
+        }
+
+    @jax.jit
+    def total_loss(self, batch, grad_params, rng=None):
+        """Compute BC flow loss and prefix its metrics as actor metrics."""
+        rng = rng if rng is not None else self.rng
+        loss, info = self.bc_flow_loss(batch, grad_params, rng)
+        return loss, {f"actor/{key}": value for key, value in info.items()}
+
+    @staticmethod
+    def _update(agent, batch):
+        """Apply one flow-BC gradient update."""
+        new_rng, rng = jax.random.split(agent.rng)
+
+        def loss_fn(grad_params):
+            """Closure passed to TrainState for differentiating flow-BC loss."""
+            return agent.total_loss(batch, grad_params, rng=rng)
+
+        new_network, info = agent.network.apply_loss_fn(loss_fn=loss_fn)
+        return agent.replace(network=new_network, rng=new_rng), info
+
+    @jax.jit
+    def update(self, batch):
+        """Run one JIT-compiled flow-BC update."""
+        return self._update(self, batch)
+
+    @jax.jit
+    def batch_update(self, batch):
+        """Run multiple flow-BC updates with `lax.scan` over a UTD batch."""
+        agent, infos = jax.lax.scan(self._update, self, batch)
+        return agent, jax.tree_util.tree_map(lambda x: x.mean(), infos)
+
+    @jax.jit
+    def sample_actions(self, observations, rng=None):
+        """Generate actions by integrating the learned flow or using one-step flow."""
+        action_dim = self.config["action_dim"] * (
+            self.config["horizon_length"] if self.config["action_chunking"] else 1
+        )
+        noises = jax.random.normal(
+            rng,
+            (*observations.shape[: -len(self.config["ob_dims"])], action_dim),
+        )
+        if self.config["actor_type"] == "onestep":
+            actions = self.network.select("actor_onestep_flow")(observations, noises)
+        else:
+            actions = self.compute_flow_actions(observations, noises)
+        return jnp.clip(actions, -1, 1)
+
+    @jax.jit
+    def sample_actions_with_log_prob(self, observations, rng=None):
+        """Generate actions and return NaN log-probs because flow sampling is implicit."""
+        actions = self.sample_actions(observations, rng=rng)
+        log_probs = jnp.full(actions.shape[:-1], jnp.nan)
+        return actions, log_probs
+
+    @jax.jit
+    def compute_flow_actions(self, observations, noises):
+        """Euler-integrate the actor vector field from Gaussian noise to actions."""
+        actions = noises
+        for i in range(self.config["flow_steps"]):
+            t = jnp.full((*observations.shape[:-1], 1), i / self.config["flow_steps"])
+            vels = self.network.select("actor_bc_flow")(observations, actions, t)
+            actions = actions + vels / self.config["flow_steps"]
+        return jnp.clip(actions, -1, 1)
+
+    @classmethod
+    def create(cls, seed, ex_observations, ex_actions, config):
+        """Initialize flow-matching actor modules from example observation/action shapes."""
+        rng = jax.random.PRNGKey(seed)
+        rng, init_rng = jax.random.split(rng, 2)
+
+        ob_dims = ex_observations.shape[1:]
+        action_dim = ex_actions.shape[-1]
+        if config["action_chunking"]:
+            full_actions = jnp.concatenate([ex_actions] * config["horizon_length"], axis=-1)
+        else:
+            full_actions = ex_actions
+        full_action_dim = full_actions.shape[-1]
+        ex_times = ex_actions[..., :1]
+
+        actor_bc_flow_def = ActorVectorField(
+            hidden_dims=config["actor_hidden_dims"],
+            action_dim=full_action_dim,
+            use_layer_norm=config["actor_layer_norm"],
+            use_fourier_features=config["use_fourier_features"],
+            fourier_feature_dim=config["fourier_feature_dim"],
+        )
+        actor_onestep_flow_def = ActorVectorField(
+            hidden_dims=config["actor_hidden_dims"],
+            action_dim=full_action_dim,
+            use_layer_norm=config["actor_layer_norm"],
+        )
+
+        network_info = {
+            "actor_bc_flow": (actor_bc_flow_def, (ex_observations, full_actions, ex_times)),
+            "actor_onestep_flow": (actor_onestep_flow_def, (ex_observations, full_actions)),
+        }
+        networks = {key: value[0] for key, value in network_info.items()}
+        network_args = {key: value[1] for key, value in network_info.items()}
+
+        network_def = ModuleDict(networks)
+        if config["weight_decay"] > 0.0:
+            tx = optax.adamw(learning_rate=config["lr"], weight_decay=config["weight_decay"])
+        else:
+            tx = optax.adam(learning_rate=config["lr"])
+        params = network_def.init(init_rng, **network_args)["params"]
+        network = TrainState.create(network_def, params, tx=tx, grad_clip_norm=config["grad_clip_norm"])
+
+        config["ob_dims"] = ob_dims
+        config["action_dim"] = action_dim
+        return cls(rng=rng, network=network, config=flax.core.FrozenDict(**config))
+
+
+def get_config():
+    """Return default flow-BC actor hyperparameters."""
+    return ml_collections.ConfigDict(
+        dict(
+            agent_name="bc_flow",
+            ob_dims=ml_collections.config_dict.placeholder(list),
+            action_dim=ml_collections.config_dict.placeholder(int),
+            lr=3e-4,
+            batch_size=256,
+            actor_hidden_dims=(512, 512, 512, 512),
+            actor_layer_norm=True,
+            horizon_length=ml_collections.config_dict.placeholder(int),
+            action_chunking=True,
+            flow_steps=10,
+            actor_type="flow",
+            target_action_key="actions",
+            use_fourier_features=False,
+            fourier_feature_dim=64,
+            weight_decay=0.0,
+            grad_clip_norm=None,
+        )
+    )

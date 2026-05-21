@@ -1,0 +1,7 @@
+# CPU-only JAX stack. Keep transitive Flax/Orbax dependencies from upgrading JAX.
+jax==0.5.3
+jaxlib==0.5.3
+ml-dtypes==0.5.1
+orbax-checkpoint==0.11.12
+tensorstore==0.1.73
+treescope==0.1.9

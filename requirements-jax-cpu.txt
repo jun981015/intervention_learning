@@ -1,0 +1,3 @@
+# CPU-only JAX fallback. Use this on laptops or machines without NVIDIA GPUs.
+jax==0.5.3
+jaxlib==0.5.3

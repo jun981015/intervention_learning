@@ -1,0 +1,128 @@
+# DAgger v0 config draft.
+#
+# This file follows docs/CONFIG_SCHEMA_DECISIONS.md, not the legacy
+# DEFAULT_RECIPE schema in il/builders/config.py. The next implementation step
+# is to migrate the loader/builders to this schema.
+
+experiment:
+  name: square_dagger_bcflow_top50_500k
+  seed: 0
+  output_dir: exp/runs
+  tags:
+    - square
+    - dagger
+    - bcflow
+    - rlpd_expert
+
+env:
+  kind: robomimic
+  name: square-mh-low_dim
+  observation_mode: lowdim
+  max_episode_steps: 400
+  render_offscreen: false
+  build_eval_env: true
+  eval_seed_offset: 10000
+
+actors:
+  learner:
+    kind: bc_flow
+    trainable: true
+    pretrained_path: exp/pretrained/bcflow_square_top50_actorln_seed0_500k
+    checkpoint_step: 500000
+    policy_view: true
+    network:
+      actor_hidden_dims: [512, 512, 512, 512]
+      actor_activation: mish
+      actor_layer_norm: true
+      horizon_length: 5
+      action_chunking: true
+      flow_steps: 10
+      use_fourier_features: false
+      fourier_feature_dim: 64
+    optimization:
+      lr: 3.0e-4
+      batch_size: 256
+      grad_clip_norm: 10.0
+      weight_decay: 0.0
+    update:
+      target_action_key: expert_actions
+
+  expert:
+    kind: rlpd
+    trainable: false
+    pretrained_path: exp/pretrained/rlpd_square_bc03_seed0_2m
+    checkpoint_step: 2000000
+    policy_view: true
+    # Keep expert network config from the pretrained artifact to avoid
+    # state-dict shape mismatches. Runtime still records the resolved config.
+    network: {}
+
+training:
+  total_steps: 300000
+  start_training: 1000
+  update_interval: 1
+  updates_per_step: 1
+  action_mode: first_action
+  reset_on_done: true
+
+replay:
+  buffers:
+    online_size: 500000
+    demo_size: 500000
+    intervention_size: 500000
+  prefill: {}
+  routing:
+    demo_insert_mode: none
+    include_failed_interventions: false
+  sampling:
+    bc:
+      source:
+        online: 1.0
+      sequence_length: 5
+      batch_size: 256
+      boundary_mode: drop
+
+intervention:
+  enabled: false
+  expert_query: always
+  gate:
+    kind: always_off
+    sticky: false
+    release: next_step
+
+storage:
+  store_executed_action: true
+  store_learner_action: true
+  store_expert_action: true
+  store_log_prob: true
+  store_gate_score: true
+  store_episode_metadata: true
+
+evaluation:
+  interval: 50000
+  episodes: 20
+  seed: 1000
+  render_video: false
+  video_episodes: 0
+  action_mode: first_action
+
+logging:
+  stdout_interval: 1000
+  csv: true
+  jsonl: true
+  wandb:
+    enabled: true
+    project: intervention_learning
+    group: square_dagger_v0
+    name: square_dagger_bcflow_top50_500k_seed0
+    tags:
+      - square
+      - dagger
+      - bcflow
+      - rlpd_expert
+
+checkpointing:
+  interval: 100000
+  save_final: true
+  save_replay: true
+  keep_last: 3

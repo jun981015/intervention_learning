@@ -1,0 +1,3 @@
+-c constraints-jax-cpu.txt
+-r requirements-jax-cpu.txt
+-r requirements.txt

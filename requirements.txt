@@ -1,0 +1,29 @@
+# Standalone Python dependencies for intervention_learning.
+# JAX is intentionally split out because CPU/GPU/CUDA wheels differ by machine.
+# Install either `requirements-jax-cu12.txt` or `requirements-jax-cpu.txt`
+# before this file.
+absl-py==2.2.2
+chex==0.1.89
+distrax==0.1.5
+dm-control==1.0.28
+flax==0.10.5
+gym==0.26.2
+gymnasium==1.1.1
+h5py==3.16.0
+imageio==2.37.0
+imageio-ffmpeg==0.6.0
+matplotlib==3.10.1
+ml-collections==1.1.0
+mujoco==3.3.1
+numpy==2.2.5
+opencv-python==4.11.0.86
+optax==0.2.4
+orbax-checkpoint==0.11.12
+robomimic==0.3.0
+robosuite==1.4.1
+scipy==1.15.2
+tensorstore==0.1.73
+tensorflow-probability==0.25.0
+tqdm==4.67.1
+treescope==0.1.9
+wandb==0.26.0

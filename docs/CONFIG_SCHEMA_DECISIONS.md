@@ -1,0 +1,509 @@
+# Config Schema Decisions
+
+이 문서는 `intervention_learning`의 train loop를 config 중심으로 구성하기 위해 현재 합의한 schema 결정을 기록한다. 목적은 DAgger 같은 IL method부터 RLPD 같은 RL method, 나중의 RL+BC hybrid까지 같은 train entrypoint에서 다루되, 지금 시점에서 과도한 objective scheduler를 만들지 않는 것이다.
+
+## 핵심 원칙
+
+- `actors.learner.kind`가 algorithm class를 결정한다.
+- algorithm class가 자기 `update()` rule을 책임진다.
+- top-level `objectives` 필드는 두지 않는다.
+- loss 종류를 config로 중복 지정하지 않는다.
+- config는 data source와 sampling 방식, rollout/intervention 방식, logging/checkpointing 운영 방식을 정한다.
+- hybrid method가 필요하면 새 `kind`를 추가하거나, 필요한 경우 named sampling batch를 넘긴다.
+
+## Top-level Fields
+
+### `experiment`
+
+실험 식별자와 재현성 메타정보를 둔다.
+
+```yaml
+experiment:
+  name: square_dagger_top50_500k
+  seed: 0
+  output_dir: exp/runs
+  tags: [square, dagger, bcflow]
+```
+
+역할:
+
+- run 이름
+- seed
+- output root
+- tag
+- config snapshot 기준
+
+### `env`
+
+환경 생성 설정을 둔다.
+
+```yaml
+env:
+  kind: robomimic
+  name: square-mh-low_dim
+  observation_mode: lowdim
+  max_episode_steps: 400
+  render_offscreen: false
+```
+
+역할:
+
+- env wrapper 선택
+- task name
+- observation mode
+- horizon
+- render/camera 관련 설정
+
+현재 image 관련 결정:
+
+- env wrapper와 replay는 image input을 받을 준비를 한다.
+- policy/network가 image를 어떻게 쓸지는 아직 결정하지 않았다.
+- 당장 train은 low-dim state policy 기준으로 진행한다.
+- image policy 학습은 별도 설계 후 붙인다.
+
+관련 문서: [NETWORKS.md#image-observation-todo](NETWORKS.md#image-observation-todo), [PIPELINE.md#image-observation-상태](PIPELINE.md#image-observation-상태)
+
+### `actors`
+
+learner/expert policy를 어떻게 만들지 정한다. `kind`는 registry key이며, policy/learning algorithm class를 선택한다.
+
+```yaml
+actors:
+  learner:
+    kind: bc_flow
+    trainable: true
+    pretrained_path: exp/pretrained/bcflow_square_top50_actorln_seed0_500k
+    network:
+      actor_hidden_dims: [512, 512, 512, 512]
+      actor_activation: mish
+      actor_layer_norm: true
+      horizon_length: 5
+      action_chunking: true
+      flow_steps: 10
+    optimization:
+      lr: 3e-4
+      batch_size: 256
+      grad_clip_norm: 10.0
+      weight_decay: 0.0
+    update:
+      target_action_key: expert_actions
+
+  expert:
+    kind: rlpd
+    trainable: false
+    pretrained_path: exp/pretrained/rlpd_square_bc03_seed0_2m
+    network:
+      actor_hidden_dims: [256, 256, 256]
+      actor_activation: mish
+      critic_hidden_dims: [256, 256, 256]
+      critic_activation: mish
+      actor_layer_norm: true
+      critic_layer_norm: true
+      num_qs: 2
+```
+
+결정:
+
+- `kind`를 사용한다. `algorithm`, `type`, `class_path`보다 실험 config용 enum에 가깝고, env/gate/actor에 일관되게 쓸 수 있다.
+- network 구조는 top-level이 아니라 각 actor 밑에 둔다.
+- network 구조는 algorithm에 depend하므로 `actors.<role>.network`가 자연스럽다.
+- activation은 network field로 둔다.
+- RLPD처럼 actor/critic이 나뉘면 `actor_activation`, `critic_activation`처럼 명시한다.
+- BCFlow처럼 actor만 있으면 `actor_activation` 또는 builder fallback으로 `activation`을 허용할 수 있다.
+- `update`에는 algorithm-specific update 옵션만 둔다. 예: BC 계열의 `target_action_key`.
+
+### `training`
+
+전체 env loop와 update timing을 정한다. 어떤 loss를 쓰는지는 learner kind가 결정한다.
+
+```yaml
+training:
+  total_steps: 300000
+  start_training: 1000
+  update_interval: 1
+  updates_per_step: 1
+  action_mode: first_action
+```
+
+역할:
+
+- 전체 env step 수
+- update 시작 시점
+- update 주기
+- env step당 gradient update 수
+- action chunk 실행 방식
+
+현재 action mode 결정:
+
+- v0는 `first_action` 기준으로 시작한다.
+- chunk policy가 action chunk를 출력해도 매 step 새 chunk를 뽑고 첫 action만 실행하는 receding-horizon 방식이다.
+- `chunk_queue`는 나중에 추가할 수 있다.
+- chunk queue를 도입하면 learner/expert 각각 독립 queue가 필요하고, gate 전환 시 queue 의미를 명확히 해야 한다.
+
+### `replay`
+
+buffer 크기, prefill, sampling recipe를 정한다.
+
+```yaml
+replay:
+  buffers:
+    online_size: 500000
+    demo_size: 500000
+    intervention_size: 500000
+  sampling:
+    bc:
+      source:
+        online: 1.0
+      sequence_length: 5
+      batch_size: 256
+      boundary_mode: drop
+```
+
+결정:
+
+- top-level `objectives` 대신 `replay.sampling`에서 batch를 이름 붙여 뽑을 수 있게 열어둔다.
+- pure BC/DAgger는 `sampling.bc`만 있으면 된다.
+- pure RL은 `sampling.rl`만 있으면 된다.
+- RL+BC hybrid는 `sampling.rl`, `sampling.bc`를 둘 다 제공하고, learner kind가 필요한 batch를 사용한다.
+
+예시 RL+BC:
+
+```yaml
+replay:
+  sampling:
+    rl:
+      source:
+        online: 1.0
+      sequence_length: 1
+      batch_size: 256
+      boundary_mode: drop
+    bc:
+      source:
+        demo: 0.5
+        intervention: 0.5
+      sequence_length: 5
+      batch_size: 256
+      boundary_mode: drop
+```
+
+train loop는 named batches를 이렇게 넘길 수 있다.
+
+```python
+batch = {
+    "rl": rl_batch,
+    "bc": bc_batch,
+}
+learner.update(batch)
+```
+
+algorithm class는 필요한 key만 사용한다.
+
+```python
+BCFlowAgent.update(batch)  # uses batch["bc"] or batch directly
+RLPDAgent.update(batch)    # uses batch["rl"] or batch directly
+RLPDBC.update(batch)       # uses both batch["rl"] and batch["bc"]
+```
+
+이 방식은 top-level objective scheduler 없이도 future hybrid method를 열어둔다.
+
+### `intervention`
+
+expert가 언제 개입하는지와 expert query 정책을 정한다. gate는 policy selector가 아니라 expert intervention trigger다.
+
+```yaml
+intervention:
+  enabled: false
+  expert_query: always
+  gate:
+    kind: always_off
+    sticky: false
+    release: next_step
+```
+
+개념:
+
+```text
+g_t = gate(s_t, history, learner_info, maybe env_info)
+
+g_t = 0 -> learner 계속 실행
+g_t = 1 -> expert intervention
+
+pi(a | s) = (1 - g_t) pi_learner(a | s) + g_t pi_expert(a | s)
+```
+
+중요한 해석:
+
+- gate는 “어떤 policy를 query할지”가 아니다.
+- gate는 “expert가 개입해야 하는 시점인지”를 판단하는 함수다.
+- learner가 expert trajectory/manifold에서 너무 벗어났거나, unsafe/low-value/high-uncertainty이면 expert가 개입한다.
+
+`expert_query`는 gate와 분리한다.
+
+```text
+always
+  DAgger label 저장용. expert가 실행하지 않아도 매 step expert action을 저장한다.
+
+on_intervention
+  gate가 켜질 때만 expert를 호출한다.
+
+never
+  expert를 호출하지 않는다.
+```
+
+DAgger v0:
+
+```yaml
+intervention:
+  enabled: false
+  expert_query: always
+  gate:
+    kind: always_off
+```
+
+진짜 intervention method:
+
+```yaml
+intervention:
+  enabled: true
+  expert_query: on_intervention
+  gate:
+    kind: deviation_from_expert
+    threshold: 0.5
+    sticky: true
+    release: back_to_safe_set
+```
+
+### `storage`
+
+rollout에서 나온 정보를 replay에 무엇까지 저장할지 정한다.
+
+```yaml
+storage:
+  store_executed_action: true
+  store_learner_action: true
+  store_expert_action: true
+  store_log_prob: true
+  store_gate_score: true
+```
+
+의미:
+
+```text
+actions          = 실제 env에 실행된 action
+learner_actions  = learner proposal
+expert_actions   = expert proposal/label, 없으면 NaN placeholder 가능
+controller_ids   = 실제 실행 controller
+interventions    = expert intervention 여부
+gating_scores    = gate score, deviation, uncertainty 등
+```
+
+DAgger에서는 일반적으로:
+
+```text
+actions == learner_actions
+expert_actions = BC target label
+interventions = 0
+```
+
+Intervention에서는:
+
+```text
+interventions = 1인 step에서 actions == expert_actions
+interventions = 0인 step에서 actions == learner_actions
+```
+
+### `evaluation`
+
+학습 중 평가 설정을 둔다.
+
+```yaml
+evaluation:
+  interval: 50000
+  episodes: 20
+  seed: 1000
+  render_video: false
+  video_episodes: 5
+```
+
+역할:
+
+- eval 주기
+- eval episode 수
+- eval seed
+- video 저장 여부
+- success/return/length metric 생성
+
+### `logging`
+
+metric 기록 방식을 둔다.
+
+```yaml
+logging:
+  stdout_interval: 1000
+  csv: true
+  jsonl: true
+  wandb:
+    enabled: true
+    project: intervention_learning
+    group: square_dagger
+```
+
+결정:
+
+- stdout, CSV, JSONL, WandB를 같은 metric dict에서 동시에 기록한다.
+- CSV는 논문 그래프용이므로 metric key를 안정적으로 유지한다.
+- JSONL은 full metric/debug record용으로 둔다.
+- WandB는 실시간 모니터링용이다.
+
+### `checkpointing`
+
+weight와 replay 저장 정책을 둔다.
+
+```yaml
+checkpointing:
+  interval: 100000
+  save_final: true
+  save_replay: true
+  keep_last: 3
+```
+
+역할:
+
+- learner checkpoint 저장 주기
+- final checkpoint 저장 여부
+- replay buffer 저장 여부
+- 오래된 checkpoint 보존 정책
+
+## DAgger v0 Target Config
+
+Concrete YAML draft: [`config/dagger.yaml`](../config/dagger.yaml).
+
+당장 구현할 baseline은 아래 의미를 갖는다.
+
+```text
+learner = BCFlow top50 500k
+expert = RLPD bc0.3
+training.action_mode = first_action
+intervention.enabled = false
+intervention.expert_query = always
+replay.sampling.bc.source = online
+actors.learner.update.target_action_key = expert_actions
+logging = stdout + csv + jsonl + wandb
+checkpoint = 100k interval
+```
+
+예시:
+
+```yaml
+experiment:
+  name: square_dagger_bcflow_top50_500k
+  seed: 0
+  output_dir: exp/runs
+
+env:
+  kind: robomimic
+  name: square-mh-low_dim
+  observation_mode: lowdim
+  max_episode_steps: 400
+
+actors:
+  learner:
+    kind: bc_flow
+    trainable: true
+    pretrained_path: exp/pretrained/bcflow_square_top50_actorln_seed0_500k
+    network:
+      actor_hidden_dims: [512, 512, 512, 512]
+      actor_activation: mish
+      actor_layer_norm: true
+      horizon_length: 5
+      action_chunking: true
+      flow_steps: 10
+    optimization:
+      lr: 3e-4
+      batch_size: 256
+      grad_clip_norm: 10.0
+    update:
+      target_action_key: expert_actions
+
+  expert:
+    kind: rlpd
+    trainable: false
+    pretrained_path: exp/pretrained/rlpd_square_bc03_seed0_2m
+
+training:
+  total_steps: 300000
+  start_training: 1000
+  update_interval: 1
+  updates_per_step: 1
+  action_mode: first_action
+
+replay:
+  buffers:
+    online_size: 500000
+    demo_size: 500000
+    intervention_size: 500000
+  sampling:
+    bc:
+      source:
+        online: 1.0
+      sequence_length: 5
+      batch_size: 256
+      boundary_mode: drop
+
+intervention:
+  enabled: false
+  expert_query: always
+  gate:
+    kind: always_off
+
+storage:
+  store_executed_action: true
+  store_learner_action: true
+  store_expert_action: true
+  store_log_prob: true
+  store_gate_score: true
+
+evaluation:
+  interval: 50000
+  episodes: 20
+  seed: 1000
+  render_video: false
+
+logging:
+  stdout_interval: 1000
+  csv: true
+  jsonl: true
+  wandb:
+    enabled: true
+    project: intervention_learning
+    group: square_dagger
+
+checkpointing:
+  interval: 100000
+  save_final: true
+  save_replay: true
+  keep_last: 3
+```
+
+## What To Finish Next
+
+1. Config loader/schema validation을 만든다.
+2. 위 DAgger v0 config를 실제 YAML 파일로 만든다.
+3. builder가 `actors.learner.kind`, `actors.expert.kind`로 policy를 만든다.
+4. train loop가 `intervention.expert_query=always`를 보고 learner rollout 중 expert label을 저장한다.
+5. replay sampler가 `replay.sampling.bc`를 읽어 named batch를 만든다.
+6. learner `kind=bc_flow`가 `batch["bc"]` 또는 single batch를 받아 `target_action_key=expert_actions`로 update한다.
+7. stdout/CSV/JSONL/WandB logger를 같은 metric dict 기반으로 붙인다.
+8. checkpoint/replay 저장 경로를 `experiment.output_dir` 아래로 정리한다.
+9. 100-step smoke를 먼저 돌려 replay 저장 key와 update loss를 검증한다.
+10. smoke 통과 후 300k DAgger train을 실행한다.
+
+## Deferred Decisions
+
+- image policy 학습 방식.
+- smart intervention gate.
+- human UI.
+- `chunk_queue` action execution.
+- `boundary_mode=truncate`.
+- top-level `objectives` scheduler.
+- RL+BC hybrid class 이름과 내부 update 순서.

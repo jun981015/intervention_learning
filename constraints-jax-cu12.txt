@@ -1,0 +1,9 @@
+# Keep the JAX stack compatible with the CUDA 12 wheel and NVIDIA driver 550.x.
+jax==0.5.3
+jaxlib==0.5.3
+jax-cuda12-pjrt==0.5.3
+jax-cuda12-plugin==0.5.3
+ml-dtypes==0.5.1
+orbax-checkpoint==0.11.12
+tensorstore==0.1.73
+treescope==0.1.9

@@ -1,0 +1,4 @@
+# GPU JAX install for Linux/NVIDIA machines with a CUDA 12 compatible driver.
+# This is the portable fresh-install path for a machine with no pre-existing
+# project conda environment.
+jax[cuda12]==0.5.3
