@@ -9,7 +9,7 @@ from gymnasium import spaces
 
 from il.buffers import ReplayBuffer, ReplayBufferCollection, load_npz_dataset, make_replay_example
 from il.builders.types import EnvSpec
-from il.gating import RandomGate
+from il.gating import ExpertQGapGate, RandomGate
 
 
 def _flat_box_dim(space: spaces.Space, *, name: str) -> int:
@@ -147,4 +147,11 @@ def build_gate(config: dict[str, Any]):
         return None
     if kind == "random":
         return RandomGate(expert_probability=float(gate_cfg["expert_probability"]))
+    if kind == "expert_q_gap":
+        return ExpertQGapGate(
+            threshold=float(gate_cfg["threshold"]),
+            intervention_prob=float(gate_cfg.get("intervention_prob", 1.0)),
+            intervention_horizon=int(gate_cfg.get("intervention_horizon", 1)),
+            q_agg=str(gate_cfg.get("q_agg", "min")),
+        )
     raise ValueError(f"Unsupported gate kind: {kind!r}")

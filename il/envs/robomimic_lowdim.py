@@ -83,6 +83,8 @@ class RobomimicLowdimWrapper(gym.Env):
         image_camera_names: tuple[str, ...] | list[str] | None = None,
         image_hw: tuple[int, int] | None = None,
         max_episode_length: int | None = None,
+        reward_scale: float = 1.0,
+        reward_shift: float = 0.0,
     ):
         self.env = env
         self.obs_keys = low_dim_keys
@@ -99,8 +101,11 @@ class RobomimicLowdimWrapper(gym.Env):
         self.image_hw = image_hw or render_hw
         self.video_writer = None
         self.max_episode_length = max_episode_length
+        self.set_reward_transform(scale=reward_scale, shift=reward_shift)
         self.env_step = 0
         self.n_episodes = 0
+        self._rng = np.random.default_rng()
+        self._last_seed = None
 
         low = np.full(env.action_dimension, fill_value=-1.0)
         high = np.full(env.action_dimension, fill_value=1.0)
@@ -184,12 +189,48 @@ class RobomimicLowdimWrapper(gym.Env):
         """Return the configured Gymnasium observation."""
         return self._format_observation(self.env.get_observation())
 
+    def set_reward_transform(self, *, scale: float | None = None, shift: float | None = None) -> None:
+        """Set affine transform applied to sparse task reward."""
+        if scale is not None:
+            self.reward_scale = float(scale)
+        if shift is not None:
+            self.reward_shift = float(shift)
+
+    def transform_reward(self, raw_reward: float) -> float:
+        """Apply configured reward scale and shift."""
+        return float(raw_reward) * self.reward_scale + self.reward_shift
+
     def seed(self, seed=None):
-        """Seed numpy RNG used by Robomimic reset."""
-        if seed is not None:
-            np.random.seed(seed=seed)
-        else:
-            np.random.seed()
+        """Seed this wrapper without permanently mutating numpy global RNG."""
+        self._last_seed = seed
+        self._rng = np.random.default_rng(seed)
+        if seed is not None and hasattr(self.env, "seed"):
+            np_state = np.random.get_state()
+            try:
+                try:
+                    return self.env.seed(seed)
+                except TypeError:
+                    return self.env.seed()
+            finally:
+                np.random.set_state(np_state)
+        return [seed]
+
+    def _reset_under_seed(self, seed):
+        """Reset Robomimic under a temporary legacy numpy seed.
+
+        Some Robomimic/robosuite reset paths still consult `np.random`'s
+        legacy global RNG. Preserve and restore that state so eval seeding does
+        not perturb replay sampling or other training randomness.
+        """
+        if seed is None:
+            self.env.reset()
+            return
+        np_state = np.random.get_state()
+        try:
+            np.random.seed(seed=int(seed))
+            self.env.reset()
+        finally:
+            np.random.set_state(np_state)
 
     def reset(self, options=None, **kwargs):
         """Reset the wrapped Robomimic env and return Gymnasium-style output."""
@@ -209,14 +250,15 @@ class RobomimicLowdimWrapper(gym.Env):
         reset_seed = options.get("seed", None)
         if reset_seed is not None:
             self.seed(seed=reset_seed)
-        self.env.reset()
+        self._reset_under_seed(reset_seed)
         return self.get_observation(), {}
 
     def step(self, action):
         """Step env with sparse task-success reward and timeout truncation."""
         raw_obs, _, done, info = self.env.step(np.asarray(action, dtype=np.float32))
         task_success = bool(info.get("is_success", {}).get("task", False))
-        reward = float(task_success)
+        task_reward = float(task_success)
+        reward = self.transform_reward(task_reward)
         obs = self._format_observation(raw_obs)
 
         if self.video_writer is not None:
@@ -229,6 +271,9 @@ class RobomimicLowdimWrapper(gym.Env):
 
         done = bool(done or task_success)
         info["success"] = int(task_success)
+        info["task_reward"] = task_reward
+        info["reward_scale"] = self.reward_scale
+        info["reward_shift"] = self.reward_shift
         info["episode_id"] = int(self.n_episodes - 1)
         info["episode_step"] = int(self.t - 1)
 
@@ -301,6 +346,9 @@ def make_env(
     image_camera_names: tuple[str, ...] | list[str] | None = None,
     render_hw: tuple[int, int] = (256, 256),
     image_hw: tuple[int, int] | None = None,
+    reward_scale: float = 1.0,
+    reward_shift: float = 0.0,
+    max_episode_steps: int | None = None,
 ):
     """Create a Robomimic low-dimensional env matching previous Square runs."""
     if observation_mode != "lowdim" and not render_offscreen:
@@ -323,7 +371,9 @@ def make_env(
         image_camera_name=image_camera_name,
         image_camera_names=image_camera_names,
         image_hw=image_hw,
-        max_episode_length=_max_episode_length(env_name),
+        max_episode_length=max_episode_steps or _max_episode_length(env_name),
+        reward_scale=reward_scale,
+        reward_shift=reward_shift,
     )
     env.seed(seed)
     return EpisodeMonitor(env)

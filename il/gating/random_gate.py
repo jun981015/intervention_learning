@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -26,9 +27,11 @@ class RandomGate:
         learner: PolicyOutput,
         expert: PolicyOutput,
         rng: np.random.Generator,
+        expert_agent: Any | None = None,
+        action_dim: int | None = None,
     ) -> GateDecision:
         """Ignore policy contents and route to expert with fixed probability."""
-        del step, observation, learner, expert
+        del step, observation, learner, expert, expert_agent, action_dim
         sample = float(rng.random())
         use_expert = sample < self.expert_probability
         return GateDecision(

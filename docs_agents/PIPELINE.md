@@ -61,6 +61,54 @@ expert = BCFlowPolicy.from_checkpoint(
 same `PolicyOutput` interface. External weights must already match this repo's
 `BCFlowAgent` state-dict layout and config.
 
+
+## Expert-Q Gap Gate
+
+`expert_q_gap` is an intervention trigger, not a policy-query selector. It
+compares expert and learner proposals at the same state with the expert's
+action-value function:
+
+```text
+q_gap = Q_expert(s, a_expert) - Q_expert(s, a_learner)
+signal = q_gap > threshold
+```
+
+If the signal is true, intervention starts with probability
+`intervention_prob`. Once started, the expert controls for
+`intervention_horizon` consecutive environment steps. There is no `p_off` in
+this v0 design.
+
+This gate must not depend on `kind == "rlpd"`. Keep the boundary explicit.
+
+Gate responsibilities:
+
+- Compare learner and expert action proposals at the same state.
+- Pass the `q_agg` string to the expert Q API.
+- Never inspect expert internals such as `critic`, `q`, or `qf` module names.
+
+Expert agent/adapter responsibilities:
+
+- Expose `evaluate_q(observations, actions, q_agg=...)` or `q_values(observations, actions, q_agg=...)`.
+- Own multi-Q head shapes and `min|mean|max` aggregation semantics.
+- Optionally expose `evaluate_q_heads(observations, actions)` for diagnostics.
+
+SAC/RLPD and TD3-BC-style experts can support this by matching the explicit API in their agent/adapter. PPO value-only
+experts cannot compute the gap unless they add an action-value head or adapter.
+
+Example:
+
+```yaml
+intervention:
+  enabled: true
+  expert_query: always
+  gate:
+    kind: expert_q_gap
+    threshold: 0.5
+    intervention_prob: 0.9
+    intervention_horizon: 10
+    q_agg: min
+```
+
 ## Buffers
 
 `online_buffer` stores every online transition collected by the learner.
@@ -89,7 +137,7 @@ recipe-driven `il/train.py` entrypoint.
 ## Unified Train Loop
 
 The entrypoint is `il/train.py`. It builds components, then delegates the
-env-step loop to `il/loops/recipe.py::run_train_loop()`.
+env-step loop to `il/loops/train_loop.py::run_train_loop()`.
 
 Loop v0 behavior:
 

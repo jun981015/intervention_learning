@@ -1,11 +1,11 @@
 # Logging and Metrics
 
 이 문서는 train loop에서 어떤 metric을 어떻게 기록할지 정리한다. 현재 목표는 매 step 파일을 쓰지 않고,
-`logging.stdout_interval` 또는 내부 legacy `train.log_interval`마다 interval 평균을 저장하는 것이다.
+`logging.stdout_interval` 또는 내부 legacy `train.log_interval`마다 interval row를 저장하는 것이다.
 
 ## 현재 구현 상태
 
-현재 logger 구현 파일은 `il/logging.py`다.
+현재 logger 구현 파일은 `il/logger/logger.py`다.
 
 현재 동작:
 
@@ -13,15 +13,18 @@
 - logger는 내부 accumulator에 metric을 모은다.
 - `log_interval`마다 JSONL, CSV, W&B, stdout에 한 번만 기록한다.
 - loss, grad norm, reward-like scalar는 interval 평균으로 기록한다.
-- replay size, episode count, step, throughput, recent env stat, routing stat은 마지막 값을 기록한다.
+- routing event count는 interval 합계로 기록한다. 예: `routing/demo_added`.
+- replay size, episode count, step, throughput, recent env stat, `*_total` counter는 마지막 값을 기록한다.
 - `train/log_interval_records`를 같이 저장해서 한 row가 몇 step 평균인지 확인할 수 있다.
 - eval metric은 train accumulator와 섞지 않기 위해 `log_immediate()`로 즉시 기록한다.
 
 주의:
 
 - `env/recent_*` 값은 이미 최근 episode window의 rolling stat이므로 interval 평균이 아니라 마지막 값을 남긴다.
-- `routing/*` 값도 episode routing 결과의 마지막 상태값으로 본다.
+- `routing/*` event 값은 episode 종료 step에만 양수이고, logger flush 시 interval 합계가 된다.
+- `routing/*_total` 값은 지금까지의 누적 counter이며 마지막 값을 남긴다.
 - CSV header는 나중에 새 metric key가 생겨도 다시 써서 누락되지 않게 한다.
+- 현재 CSV는 flush마다 전체 파일을 다시 쓰므로, 긴 run 전에는 CSV write frequency와 append/write 정책을 분리해야 한다.
 
 ## 현재 확인한 smoke
 
@@ -74,6 +77,12 @@ Routing:
 - `routing/demo_removed`
 - `routing/demo_skipped`
 - `routing/intervention_added`
+- `routing/failed_intervention_seen`
+- `routing/demo_added_total`
+- `routing/demo_removed_total`
+- `routing/demo_skipped_total`
+- `routing/intervention_added_total`
+- `routing/failed_intervention_seen_total`
 
 BCFlow learner update:
 
@@ -138,6 +147,11 @@ Eval:
 - `action/learner_expert_l2_mean`
 - `action/learner_expert_l2_max`
 - `action/clip_fraction`
+- `action/executed_variance`
+- `action/learner_variance`
+- `action/expert_variance`
+- `action/policy_entropy_mean`
+- `action/policy_entropy_min`
 - `action/gripper_mean`
 - `action/gripper_sign_flip_fraction`
 
@@ -145,7 +159,28 @@ Eval:
 
 - DAgger에서는 learner가 expert action에 가까워지는지가 핵심이다.
 - action clipping이 자주 발생하면 policy output scale이나 action distribution 문제가 있다.
+- action variance/entropy는 policy가 collapse했는지, 또는 너무 random한지 보는 health metric이다.
 - robomimic gripper는 action 해석이 중요하므로 따로 봐야 한다.
+
+
+### State / distribution health
+
+우선순위 높음:
+
+- `state/norm_mean`
+- `state/norm_std`
+- `state/dim_mean/*` 또는 selected dims
+- `state/dim_std/*` 또는 selected dims
+- `state/running_mean_shift`
+- `state/running_std_shift`
+- `state/out_of_dataset_z_max`
+- `state/out_of_dataset_z_fraction`
+
+이유:
+
+- intervention/online learning에서는 state distribution drift가 성능과 forgetting의 핵심 신호가 될 수 있다.
+- offline demo 또는 초기 replay 기준 running stat과 online rollout stat이 얼마나 달라지는지 봐야 한다.
+- 모든 state dimension을 매번 stdout에 찍지 말고 JSONL/CSV/W&B 중심으로 기록한다.
 
 ### Gate / intervention
 
@@ -234,12 +269,14 @@ Eval:
 ## 구현 TODO
 
 1. `MetricLogger`에 metric category별 aggregation policy를 config로 받을 수 있게 한다.
-2. train loop에서 env step time, sample time, update time을 분리해서 기록한다.
-3. replay sampler가 batch source id와 terminal/timeout/mask 통계를 반환하게 한다.
-4. policy sampling path에서 learner/expert/action clipping 통계를 계산한다.
-5. gate decision을 interval accumulator에 넣어 intervention rate를 기록한다.
-6. episode 종료 시 success/failure/timeout별 episode stat을 따로 업데이트한다.
-7. BCFlow update info에 chunk index별 loss 또는 action l2를 추가한다.
+2. CSV는 매 flush 전체 rewrite가 아니라 configurable write frequency와 append/rotate 정책을 둔다.
+3. train loop에서 env step time, sample time, update time을 분리해서 기록한다.
+4. replay sampler가 batch source id와 terminal/timeout/mask 통계를 반환하게 한다.
+5. policy sampling path에서 learner/expert/action clipping, action variance, policy entropy 통계를 계산한다.
+6. state distribution health metric을 rollout path에서 계산한다. offline/demo baseline stat과 online running stat 비교를 우선한다.
+7. gate decision을 interval accumulator에 넣어 intervention rate를 기록한다.
+8. episode 종료 시 success/failure/timeout별 episode stat을 따로 업데이트한다.
+9. BCFlow update info에 chunk index별 loss 또는 action l2를 추가한다.
 8. RLPD update info에 Q/alpha/log_prob 관련 scalar를 표준 이름으로 맞춘다.
 9. `docs_agents/LOGGING_AND_METRICS.md`와 동기화한다.
 

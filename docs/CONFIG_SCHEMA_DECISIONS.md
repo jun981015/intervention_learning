@@ -44,6 +44,8 @@ env:
   observation_mode: lowdim
   max_episode_steps: 400
   render_offscreen: false
+  reward_scale: 1.0
+  reward_shift: 0.0
 ```
 
 역할:
@@ -53,6 +55,15 @@ env:
 - observation mode
 - horizon
 - render/camera 관련 설정
+- sparse task reward의 affine transform 설정
+
+Reward transform:
+
+- Robomimic 기본 task reward는 성공 여부 기반 `task_reward = float(success)`로 둔다.
+- env가 반환하는 reward는 `reward = task_reward * reward_scale + reward_shift`다.
+- 기본값 `reward_scale=1.0`, `reward_shift=0.0`은 기존 binary reward와 동일하다.
+- 예를 들어 모든 step에 `-1`, 성공 step에 `0`을 주고 싶으면 `reward_scale=1.0`, `reward_shift=-1.0`을 쓴다.
+- `info["task_reward"]`에는 transform 전 sparse task reward를 남긴다.
 
 현재 image 관련 결정:
 
@@ -216,8 +227,6 @@ intervention:
   expert_query: always
   gate:
     kind: always_off
-    sticky: false
-    release: next_step
 ```
 
 개념:
@@ -260,18 +269,37 @@ intervention:
     kind: always_off
 ```
 
-진짜 intervention method:
+진짜 intervention method 예시:
 
 ```yaml
 intervention:
   enabled: true
-  expert_query: on_intervention
+  expert_query: always
   gate:
-    kind: deviation_from_expert
+    kind: expert_q_gap
     threshold: 0.5
-    sticky: true
-    release: back_to_safe_set
+    intervention_prob: 0.9
+    intervention_horizon: 10
+    q_agg: min
 ```
+
+`expert_q_gap` 의미:
+
+```text
+q_gap = Q_expert(s, a_expert) - Q_expert(s, a_learner)
+signal = q_gap > threshold
+if signal: expert intervention starts with probability intervention_prob
+```
+
+- `intervention_prob`은 signal이 켜졌을 때만 적용한다. 별도 `p_off`는 두지 않는다.
+- `intervention_horizon`은 intervention이 시작된 뒤 expert가 연속으로 제어하는 env step 수다.
+- `q_agg`는 ensemble Q head를 scalar로 줄이는 방식이며 `min`, `mean`, `max`를 지원한다.
+- gate는 expert 내부 network/module 이름을 모른다. `critic`, `q`, `qf` 같은 이름을 직접 탐색하지 않는다.
+- gate는 `q_agg` 문자열을 expert API에 넘길 뿐, Q head shape이나 aggregation 구현을 가정하지 않는다.
+- expert agent 또는 adapter가 `evaluate_q(obs, action, q_agg=...)` 또는 `q_values(obs, action, q_agg=...)`를 제공해야 한다.
+- multi-Q 알고리즘은 필요하면 `evaluate_q_heads(obs, action)`를 추가로 제공하고, `evaluate_q(..., q_agg=...)`에서 scalar Q를 반환한다.
+- 이 gate는 RLPD 전용이 아니다. SAC, TD3-BC 등도 adapter가 위 API를 맞추면 같은 방식으로 쓸 수 있다.
+- PPO처럼 value-only critic만 있는 expert는 `Q(s, a_expert) - Q(s, a_learner)`를 계산할 수 없으므로 action-value head 또는 별도 adapter가 필요하다.
 
 ### `storage`
 

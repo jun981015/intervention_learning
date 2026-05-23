@@ -4,7 +4,7 @@ from __future__ import annotations
 
 `train.py` only orchestrates construction. YAML decides what kind of learner,
 expert, replay, gate, update recipe, and routing policy to build. The actual
-env-step loop lives in `il.loops.recipe`.
+env-step loop lives in `il.loops.train_loop`.
 """
 
 import argparse
@@ -22,7 +22,7 @@ from il.builders.actors import build_actor_bundle
 from il.builders.components import build_buffers, build_envs, build_gate, infer_env_spec
 from il.builders.config import load_recipe, make_run_paths, write_resolved_config
 from il.builders.types import TrainContext
-from il.loops.recipe import run_train_loop
+from il.loops.train_loop import run_train_loop
 
 
 def build_context(config: dict) -> TrainContext:
@@ -47,7 +47,9 @@ def build_context(config: dict) -> TrainContext:
 
     expert_spec = config.get("expert")
     expert = None
-    if expert_spec is not None and bool(config["rollout"].get("sample_expert", False)):
+    rollout_execute = config["rollout"].get("execute", "learner")
+    should_build_expert = bool(config["rollout"].get("sample_expert", False)) or rollout_execute in ("expert", "gate")
+    if expert_spec is not None and should_build_expert:
         expert = build_actor_bundle(
             name="expert",
             spec=expert_spec,

@@ -52,6 +52,22 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
             return target_qs.mean(axis=0)
         raise ValueError(f"Unsupported target_q_agg: {self.config['target_q_agg']}")
 
+    @jax.jit
+    def evaluate_q_heads(self, observations, actions):
+        """Evaluate all action-value heads for an arbitrary action proposal."""
+        return self.network.select('critic')(observations, actions)
+
+    def evaluate_q(self, observations, actions, *, q_agg: str = "min"):
+        """Evaluate a scalar Q value using the requested ensemble aggregation."""
+        q_heads = self.evaluate_q_heads(observations, actions)
+        if q_agg == "min":
+            return q_heads.min(axis=0)
+        if q_agg == "mean":
+            return q_heads.mean(axis=0)
+        if q_agg == "max":
+            return q_heads.max(axis=0)
+        raise ValueError(f"Unsupported q_agg: {q_agg}")
+
     def critic_loss(self, batch, grad_params, rng):
         """Compute masked n-step TD loss for the critic ensemble."""
 

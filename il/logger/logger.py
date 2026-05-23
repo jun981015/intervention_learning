@@ -34,11 +34,15 @@ _LAST_VALUE_SUFFIXES = (
     "_count",
     "/step",
     "_step",
+    "_total",
+)
+
+_SUM_VALUE_PREFIXES = (
+    "routing/",
 )
 
 _LAST_VALUE_PREFIXES = (
     "env/recent_",
-    "routing/",
 )
 
 
@@ -117,7 +121,7 @@ class MetricLogger:
         payload: dict[str, float | int | str] = {}
         for key, value_sum in self._sum.items():
             count = max(self._count.get(key, 0), 1)
-            payload[key] = value_sum / count
+            payload[key] = value_sum if _is_sum_value_key(key) else value_sum / count
         payload.update(self._last)
         payload["train/log_interval_records"] = self._records
         payload.setdefault("train/step", int(step))
@@ -212,6 +216,10 @@ class NullLogger:
 
     def close(self) -> None:
         pass
+
+
+def _is_sum_value_key(key: str) -> bool:
+    return key.startswith(_SUM_VALUE_PREFIXES) and not key.endswith("_total")
 
 
 def _is_last_value_key(key: str) -> bool:

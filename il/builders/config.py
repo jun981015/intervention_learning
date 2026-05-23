@@ -29,6 +29,8 @@ DEFAULT_RECIPE: dict[str, Any] = {
         "name": "square-mh-low_dim",
         "observation_mode": "lowdim",
         "render_offscreen": False,
+        "reward_scale": 1.0,
+        "reward_shift": 0.0,
         "build_eval_env": True,
         "eval_seed_offset": 10_000,
     },
@@ -86,7 +88,6 @@ DEFAULT_RECIPE: dict[str, Any] = {
         {
             "name": "learner_bc",
             "target": "learner",
-            "objective": "bc",
             "source": "online",
             "target_action_key": "expert_actions",
         }
@@ -237,7 +238,6 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
     }
 
     sampling_name, sampling = _first_sampling_spec(replay.get("sampling") or {})
-    del sampling_name
     batch_size = int(
         sampling.get(
             "batch_size",
@@ -259,23 +259,29 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
     expert = actors.get("expert")
     recipe["expert"] = _new_actor_to_legacy(expert) if expert is not None else None
 
-    expert_query = intervention.get("expert_query", "never")
+    intervention_enabled = bool(intervention.get("enabled", False))
+    expert_query = intervention.get("expert_query", "always" if intervention_enabled else "never")
     recipe["rollout"] = {
         "sample_learner": True,
         "sample_expert": expert_query == "always",
         "execute": "learner",
+        "expert_query": expert_query,
         "action_mode": training.get("action_mode", "first_action"),
     }
-    if intervention.get("enabled", False):
+    if intervention_enabled:
         recipe["rollout"]["execute"] = "gate"
-        recipe["rollout"]["sample_expert"] = expert_query in ("always", "on_intervention")
+        recipe["rollout"]["sample_expert"] = expert_query == "always"
 
     gate = intervention.get("gate") or {}
     gate_kind = gate.get("kind", "always_off")
     recipe["gate"] = {
         "kind": "none" if gate_kind in ("always_off", "none", None) else gate_kind,
-        "expert_probability": float(gate.get("expert_probability", gate.get("probability", 0.0))),
     }
+    if recipe["gate"]["kind"] == "random":
+        recipe["gate"]["expert_probability"] = float(gate.get("expert_probability", gate.get("probability", 0.0)))
+    for key in ("threshold", "intervention_prob", "intervention_horizon", "q_agg"):
+        if key in gate:
+            recipe["gate"][key] = copy.deepcopy(gate[key])
 
     buffers = replay.get("buffers") or {}
     routing = replay.get("routing") or {}
@@ -290,12 +296,9 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
     }
 
     source, sampling_fractions = _source_to_legacy(sampling.get("source", "online"))
-    learner_kind = recipe["learner"]["kind"]
-    objective = "bc" if learner_kind.startswith("bc_") else "rl"
     update_spec = {
-        "name": "learner_bc" if objective == "bc" else "learner_rl",
+        "name": f"learner_{sampling_name}",
         "target": "learner",
-        "objective": objective,
         "source": source,
         "batch_size": batch_size,
         "horizon_length": int(sampling.get("sequence_length", recipe["learner"]["config"].get("horizon_length", 1))),

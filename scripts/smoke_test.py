@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,8 +19,11 @@ from il.buffers.replay_buffer import ReplayBuffer
 from il.buffers.routing import route_episode_to_buffers
 from il.buffers.schema import make_replay_example, step_record_to_transition
 from il.builders.components import build_buffers, infer_env_spec
+from il.builders.config import new_schema_to_legacy_recipe
+from il.gating.expert_q_gap import ExpertQGapGate
 from il.gating.random_gate import RandomGate
-from il.loops.online import choose_action
+from il.envs.robomimic_lowdim import RobomimicLowdimWrapper
+from il.logger import MetricLogger
 from il.policies.bc_flow import BCFlowPolicy
 from il.policies.rlpd import RLPDPolicy
 from il.utils.config import TrainingConfig
@@ -38,12 +42,96 @@ class ConstantPolicy:
         return PolicyOutput(action=self.action.copy(), log_prob=self.log_prob)
 
 
+class FakeRobomimicEnv:
+    """Tiny Robomimic-like env used to test wrapper-only behavior."""
+
+    action_dimension = 2
+
+    def __init__(self, *, success: bool):
+        self.success = success
+
+    def get_observation(self):
+        return {
+            "robot0_eef_pos": np.zeros(3, dtype=np.float32),
+            "robot0_eef_quat": np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            "robot0_gripper_qpos": np.zeros(2, dtype=np.float32),
+            "object": np.zeros(10, dtype=np.float32),
+        }
+
+    def reset(self):
+        return None
+
+    def seed(self, seed=None):
+        return [seed]
+
+    def step(self, action):
+        del action
+        return self.get_observation(), 123.0, False, {"is_success": {"task": self.success}}
+
+    def render(self, *args, **kwargs):
+        del args, kwargs
+        return np.zeros((8, 8, 3), dtype=np.uint8)
+
+
+def smoke_reward_transform() -> None:
+    """Check wrapper-level reward scale/shift without launching a simulator."""
+    failure_env = RobomimicLowdimWrapper(
+        FakeRobomimicEnv(success=False),
+        reward_scale=1.0,
+        reward_shift=-1.0,
+        max_episode_length=1,
+    )
+    _, reward, terminated, truncated, info = failure_env.step(np.zeros(2, dtype=np.float32))
+    assert reward == -1.0
+    assert not terminated
+    assert truncated
+    assert info["task_reward"] == 0.0
+    assert info["reward_shift"] == -1.0
+
+    success_env = RobomimicLowdimWrapper(
+        FakeRobomimicEnv(success=True),
+        reward_scale=1.0,
+        reward_shift=-1.0,
+    )
+    _, reward, terminated, truncated, info = success_env.step(np.zeros(2, dtype=np.float32))
+    assert reward == 0.0
+    assert terminated
+    assert not truncated
+    assert info["task_reward"] == 1.0
+    assert info["success"] == 1
+
+
+def choose_smoke_action(
+    *,
+    step: int,
+    observation: np.ndarray,
+    learner: ConstantPolicy,
+    expert: ConstantPolicy,
+    gate: RandomGate,
+    learner_rng,
+    expert_rng,
+    gate_rng: np.random.Generator,
+):
+    """Small simulator-free helper for smoke tests only."""
+    learner_output = learner.sample_action(observation, rng=learner_rng)
+    expert_output = expert.sample_action(observation, rng=expert_rng)
+    decision = gate.decide(
+        step=step,
+        observation=observation,
+        learner=learner_output,
+        expert=expert_output,
+        rng=gate_rng,
+    )
+    action = expert_output.action if decision.use_expert else learner_output.action
+    return np.asarray(action, dtype=np.float32), learner_output, expert_output, decision
+
+
 def smoke_gate_and_replay() -> None:
     observation = np.zeros(5, dtype=np.float32)
     learner = ConstantPolicy(np.full(2, -0.5, dtype=np.float32), log_prob=-1.0)
     expert = ConstantPolicy(np.full(2, 0.5, dtype=np.float32), log_prob=-0.5)
     gate = RandomGate(expert_probability=1.0)
-    action, learner_output, expert_output, decision = choose_action(
+    action, learner_output, expert_output, decision = choose_smoke_action(
         step=0,
         observation=observation,
         learner=learner,
@@ -84,7 +172,7 @@ def make_mock_episode(gate_probs: list[float], *, success: bool, episode_id: int
     for step, expert_probability in enumerate(gate_probs):
         observation = np.full(observation_dim, step, dtype=np.float32)
         next_observation = np.full(observation_dim, step + 1, dtype=np.float32)
-        action, learner_output, expert_output, decision = choose_action(
+        action, learner_output, expert_output, decision = choose_smoke_action(
             step=step,
             observation=observation,
             learner=learner,
@@ -538,6 +626,146 @@ def smoke_bc_flow(obs_dim: int, action_dim: int) -> None:
     assert np.isfinite(float(info["actor/bc_flow_loss"]))
 
 
+def smoke_bc_flow_chunk_valid_handling(obs_dim: int, action_dim: int) -> None:
+    """Check chunked BCFlow accepts valid single-step labels and rejects mismatched chunks."""
+    config = get_bc_flow_config()
+    config.horizon_length = 1
+    config.action_chunking = True
+    config.actor_hidden_dims = (32, 32)
+    config.batch_size = 4
+    config.flow_steps = 2
+    config.grad_clip_norm = None
+    config.target_action_key = "expert_actions"
+
+    ex_observations = jnp.zeros((config.batch_size, obs_dim), dtype=jnp.float32)
+    ex_actions = jnp.zeros((config.batch_size, action_dim), dtype=jnp.float32)
+    agent = BCFlowAgent.create(2, ex_observations, ex_actions, config)
+    single_step_batch = {
+        "observations": np.zeros((config.batch_size, obs_dim), dtype=np.float32),
+        "expert_actions": np.full((config.batch_size, action_dim), 0.1, dtype=np.float32),
+    }
+    agent, info = agent.update(single_step_batch)
+    assert np.isfinite(float(info["actor/bc_flow_loss"]))
+    assert float(info["actor/flow_valid_fraction"]) == 1.0
+
+    config = get_bc_flow_config()
+    config.horizon_length = 3
+    config.action_chunking = True
+    config.actor_hidden_dims = (32, 32)
+    config.batch_size = 4
+    config.flow_steps = 2
+    config.grad_clip_norm = None
+    config.target_action_key = "expert_actions"
+    agent = BCFlowAgent.create(3, ex_observations, ex_actions, config)
+    sequence_batch = {
+        "observations": np.zeros((config.batch_size, obs_dim), dtype=np.float32),
+        "expert_actions": np.full(
+            (config.batch_size, config.horizon_length, action_dim),
+            0.1,
+            dtype=np.float32,
+        ),
+    }
+    agent, info = agent.update(sequence_batch)
+    assert np.isfinite(float(info["actor/bc_flow_loss"]))
+    assert float(info["actor/flow_valid_fraction"]) == 1.0
+
+    bad_batch = {
+        "observations": np.zeros((config.batch_size, obs_dim), dtype=np.float32),
+        "expert_actions": np.full((config.batch_size, action_dim), 0.1, dtype=np.float32),
+    }
+    try:
+        agent.update(bad_batch)
+    except ValueError as exc:
+        assert "action_chunking=True" in str(exc)
+    else:
+        raise AssertionError("chunked BCFlow should reject primitive single-step targets for horizon > 1")
+
+
+def smoke_expert_query_semantics() -> None:
+    """Check intervention configs query expert proposals by default."""
+
+    def make_public_config(intervention):
+        return {
+            "experiment": {"name": "smoke", "seed": 0},
+            "env": {"kind": "robomimic", "name": "square-mh-low_dim"},
+            "actors": {
+                "learner": {"kind": "bc_flow"},
+                "expert": {"kind": "rlpd", "pretrained_path": "dummy"},
+            },
+            "training": {"total_steps": 1},
+            "replay": {"sampling": {"bc": {"source": "online"}}},
+            "intervention": intervention,
+        }
+
+    recipe = new_schema_to_legacy_recipe(
+        make_public_config({"enabled": True, "gate": {"kind": "expert_q_gap", "threshold": 0.5}})
+    )
+    assert recipe["rollout"]["expert_query"] == "always"
+    assert recipe["rollout"]["sample_expert"] is True
+
+    recipe = new_schema_to_legacy_recipe(
+        make_public_config(
+            {"enabled": True, "expert_query": "never", "gate": {"kind": "expert_q_gap", "threshold": 0.5}}
+        )
+    )
+    assert recipe["rollout"]["expert_query"] == "never"
+    assert recipe["rollout"]["sample_expert"] is False
+
+
+class NonFiniteQAgent:
+    config = {"action_chunking": False, "horizon_length": 1}
+
+    def evaluate_q(self, observations, actions, *, q_agg="min"):
+        del observations, actions, q_agg
+        return jnp.asarray([jnp.nan], dtype=jnp.float32)
+
+
+def smoke_expert_q_gap_nonfinite_fails() -> None:
+    """Check missing/invalid proposals do not silently become no-intervention."""
+    gate = ExpertQGapGate(threshold=0.5, intervention_prob=1.0)
+    learner = PolicyOutput(action=np.zeros(2, dtype=np.float32))
+    expert = PolicyOutput(action=np.full(2, np.nan, dtype=np.float32), info={"missing": "expert_not_sampled"})
+    try:
+        gate.decide(
+            step=0,
+            observation=np.zeros(5, dtype=np.float32),
+            learner=learner,
+            expert=expert,
+            rng=np.random.default_rng(0),
+            expert_agent=NonFiniteQAgent(),
+            action_dim=2,
+        )
+    except ValueError as exc:
+        assert "non-finite" in str(exc)
+    else:
+        raise AssertionError("expert_q_gap should fail on non-finite Q values")
+
+def smoke_metric_logger_routing_aggregation() -> None:
+    """Check averages, routing interval sums, and routing total counters."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        logger = MetricLogger(
+            run_dir=Path(tmpdir),
+            config={"run": {}},
+            stdout_interval=0,
+            jsonl_enabled=True,
+            csv_enabled=True,
+            wandb_enabled=False,
+        )
+        logger.record({"loss": 1.0, "routing/demo_added": 0.0, "routing/demo_added_total": 0.0}, step=1)
+        logger.record({"loss": 3.0, "routing/demo_added": 2.0, "routing/demo_added_total": 2.0}, step=2)
+        logger.record(
+            {"loss": 5.0, "routing/demo_added": 0.0, "routing/demo_added_total": 2.0},
+            step=3,
+            force_flush=True,
+        )
+        logger.close()
+        rows = [json.loads(line) for line in (Path(tmpdir) / "metrics.jsonl").read_text().splitlines()]
+
+    assert len(rows) == 1
+    assert rows[0]["loss"] == 3.0
+    assert rows[0]["routing/demo_added"] == 2.0
+    assert rows[0]["routing/demo_added_total"] == 2.0
+
 def smoke_bc_flow_policy_checkpoint(obs_dim: int, action_dim: int) -> None:
     """Check source-agnostic BC flow checkpoint restore through the policy adapter."""
     config = get_bc_flow_config()
@@ -578,8 +806,16 @@ def main() -> None:
 
     print(f"jax={jax.__version__}")
     print(f"devices={jax.devices()}")
+    smoke_reward_transform()
+    print("reward transform smoke ok")
     smoke_gate_and_replay()
     print("gate/replay smoke ok")
+    smoke_expert_query_semantics()
+    print("expert query semantics smoke ok")
+    smoke_expert_q_gap_nonfinite_fails()
+    print("expert q-gap non-finite smoke ok")
+    smoke_metric_logger_routing_aggregation()
+    print("metric logger routing aggregation smoke ok")
     smoke_intervention_routing()
     print("intervention routing smoke ok")
     smoke_demo_episode_replacement()
@@ -596,6 +832,8 @@ def main() -> None:
     print("bc mlp smoke ok")
     smoke_bc_flow(args.obs_dim, args.action_dim)
     print("bc flow smoke ok")
+    smoke_bc_flow_chunk_valid_handling(args.obs_dim, args.action_dim)
+    print("bc flow chunk valid handling smoke ok")
     smoke_bc_flow_policy_checkpoint(args.obs_dim, args.action_dim)
     print("bc flow policy checkpoint smoke ok")
 

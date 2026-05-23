@@ -75,29 +75,26 @@
 - DAgger relabeling에는 충분하다.
 - RL+BC, residual policy, diffusion+RL로 가려면 먼저 풀어야 한다.
 
-### 4. Learner kind naming이 objective를 결정함
+### 4. Update objective inference 제거됨
 
-파일: `il/builders/config.py`
+파일: `il/builders/config.py`, `il/loops/updates.py`
 
-관련 위치:
+현재 상태:
 
-```text
-objective = "bc" if learner_kind.startswith("bc_") else "rl"
-```
+- runtime update path는 더 이상 `objective=bc|rl`을 보지 않는다.
+- `learner_kind.startswith("bc_")`로 objective를 추론하지 않는다.
+- update spec은 target actor, replay source, sampling knob, optional `target_action_key`만 정한다.
+- 실제 loss는 `agent.update(batch)`를 구현한 agent kind가 결정한다.
+- DAgger/BC relabeling은 `target_action_key="expert_actions"`로 표현한다.
 
-영향:
+남은 영향:
 
-- `kind` 이름이 update objective와 강하게 결합된다.
-- `diffusion_rl`, `hybrid_bc_rl`, `residual_mlp` 같은 알고리즘은 단순 naming rule로 표현하기 어렵다.
-
-판단:
-
-- v0에서는 간단해서 좋다.
-- hybrid method가 시작되면 `actors.learner.update_recipe` 또는 explicit update spec으로 바꾸는 것이 낫다.
+- named multi-batch RL+BC hybrid는 아직 별도 작업이다.
+- `target_action_key`는 supervised-action label이 필요한 agent에만 의미가 있다.
 
 ### 5. Config에 있지만 runtime에서 아직 안 쓰는 field가 있음
 
-파일: `config/dagger.yaml`, `il/loops/recipe.py`
+파일: `config/dagger.yaml`, `il/loops/train_loop.py`
 
 현재 미반영 또는 약하게 반영된 예:
 
@@ -145,7 +142,8 @@ objective = "bc" if learner_kind.startswith("bc_") else "rl"
 관련 위치:
 
 - dataset path: `~/.robomimic/{task}/{dataset_type}/low_dim_v15.hdf5`
-- reward: `float(task_success)`
+- reward base: `float(task_success)`
+- reward transform: `reward = task_reward * reward_scale + reward_shift`
 - success 시 terminate
 - horizon은 task name prefix로 결정
 
@@ -156,7 +154,8 @@ objective = "bc" if learner_kind.startswith("bc_") else "rl"
 판단:
 
 - 현재 reward hacking 우려 때문에 sparse binary reward를 의도적으로 둔 것으로 이해하면 된다.
-- 하지만 reward mode와 dataset path는 config화하는 게 좋다.
+- `reward_scale` / `reward_shift` affine transform은 config화했다. transform 전 값은 `info["task_reward"]`에 남긴다.
+- dense reward나 task-specific shaped reward mode, dataset path config화는 아직 별도 작업이다.
 
 ### 8. Actor builder는 lowdim-only를 강하게 요구함
 
@@ -219,7 +218,7 @@ if name == "expert" and not spec.get("pretrained_path"):
 
 ### 11. Eval은 learner-only
 
-파일: `il/loops/recipe.py`
+파일: `il/loops/train_loop.py`
 
 영향:
 
@@ -232,7 +231,7 @@ if name == "expert" and not spec.get("pretrained_path"):
 
 ### 12. Update schedule이 단순함
 
-파일: `il/loops/recipe.py`
+파일: `il/loops/train_loop.py`
 
 현재 동작:
 
@@ -250,7 +249,7 @@ if name == "expert" and not spec.get("pretrained_path"):
 
 ### 13. Buffer 부족 skip이 exception string에 의존함
 
-파일: `il/loops/recipe.py`
+파일: `il/loops/train_loop.py`
 
 관련 동작:
 
@@ -268,7 +267,7 @@ if name == "expert" and not spec.get("pretrained_path"):
 
 ### 14. Save behavior가 config flag를 무시함
 
-파일: `il/loops/recipe.py`
+파일: `il/loops/train_loop.py`
 
 현재 동작:
 
@@ -289,7 +288,7 @@ if name == "expert" and not spec.get("pretrained_path"):
 
 ### 15. stdout summary가 BCFlow metric 이름에 묶여 있음
 
-파일: `il/logging.py`
+파일: `il/logger/logger.py`
 
 관련 위치:
 
@@ -391,10 +390,9 @@ if name == "expert" and not spec.get("pretrained_path"):
 1. `training.update_interval`, `training.updates_per_step`, `checkpointing.save_*`를 runtime에 반영한다.
 2. stdout logger key를 algorithm-agnostic하게 만든다.
 3. replay sampling을 named multi-batch로 넘길 수 있게 한다.
-4. update objective 결정에서 `kind.startswith("bc_")` 의존을 제거한다.
-5. env registry에 두 번째 env를 추가할 때 dataset path/reward mode를 config화한다.
-6. action chunk queue는 별도 작업으로 구현한다.
-7. image policy는 env/replay가 안정된 뒤 network builder부터 추가한다.
+4. env registry에 두 번째 env를 추가할 때 dataset path/reward mode를 config화한다.
+5. action chunk queue는 별도 작업으로 구현한다.
+6. image policy는 env/replay가 안정된 뒤 network builder부터 추가한다.
 
 ## 현재 판단
 

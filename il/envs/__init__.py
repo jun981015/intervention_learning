@@ -35,6 +35,9 @@ def make_env(config: dict, *, seed: int = 0):
         "camera_names",
         "image_camera_name",
         "image_camera_names",
+        "reward_scale",
+        "reward_shift",
+        "max_episode_steps",
     ):
         if key in config:
             kwargs[key] = config[key]

@@ -19,6 +19,7 @@ class GateReason(IntEnum):
 
     NONE = 0
     RANDOM = 1
+    EXPERT_Q_GAP = 2
 
 
 @dataclass(frozen=True)

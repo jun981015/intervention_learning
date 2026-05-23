@@ -1,11 +1,9 @@
 """Rollout and training-loop orchestration.
 
-Loops connect envs, policies, gates, buffers, and trainable algos. They own the
-data-flow decisions: what action is executed, what is stored, and when updates
-run. Network definitions and low-level losses should stay in `algo`/`networks`.
+Loops connect envs, policies, gates, buffers, and trainable algos. Import concrete
+helpers from their modules, e.g. `il.loops.rollout` or `il.loops.train_loop`. Keeping
+this package init import-light avoids circular imports between train loops and
+evaluation helpers.
 """
 
-from il.loops.online import choose_action
-from il.loops.recipe import run_train_loop
-
-__all__ = ["choose_action", "run_train_loop"]
+__all__: list[str] = []

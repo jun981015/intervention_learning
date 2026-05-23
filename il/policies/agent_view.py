@@ -48,18 +48,32 @@ class AgentPolicyView:
         return chunk[0], {"full_action_chunk": chunk, "chunk_index": 0}
 
     def sample_action(self, observation: np.ndarray, *, rng) -> PolicyOutput:
-        """Sample one action proposal using the wrapped agent."""
+        """Sample one action proposal using the wrapped agent.
+
+        Stochastic agents may expose `sample_actions_with_log_prob`.
+        Deterministic agents such as TD3-BC only need `sample_actions`; in that
+        case log-probability is not defined and is stored as NaN.
+        """
         if rng is None:
             rng = jax.random.PRNGKey(0)
-        action, log_prob = self.agent.sample_actions_with_log_prob(
-            jnp.asarray(observation, dtype=jnp.float32),
-            rng=rng,
-        )
+        obs = jnp.asarray(observation, dtype=jnp.float32)
+        if hasattr(self.agent, "sample_actions_with_log_prob"):
+            action, log_prob = self.agent.sample_actions_with_log_prob(obs, rng=rng)
+            log_prob_np = np.asarray(log_prob, dtype=np.float32).reshape(-1)
+            log_prob_value = float(log_prob_np[0]) if log_prob_np.size else float("nan")
+        elif hasattr(self.agent, "sample_actions"):
+            action = self.agent.sample_actions(obs, rng=rng)
+            log_prob_value = float("nan")
+        else:
+            raise ValueError(
+                f"Actor kind={self.kind!r} must expose sample_actions() or "
+                "sample_actions_with_log_prob()."
+            )
+
         action_np, info = self._format_action(np.asarray(action))
-        log_prob_np = np.asarray(log_prob, dtype=np.float32).reshape(-1)
         return PolicyOutput(
             action=action_np,
-            log_prob=float(log_prob_np[0]) if log_prob_np.size else float("nan"),
+            log_prob=log_prob_value,
             info={
                 "kind": self.kind,
                 "checkpoint_path": str(self.checkpoint_path) if self.checkpoint_path else "",

@@ -24,14 +24,57 @@ class BCFlowAgent(flax.struct.PyTreeNode):
     config: Any = nonpytree_field()
 
     def _flatten_batch_actions(self, batch):
-        """Return the action target shape expected by the flow actor."""
+        """Return action targets in the actor output shape and validate chunk semantics."""
         target_key = self.config.get("target_action_key", "actions")
-        actions = batch[target_key]
+        actions = jnp.asarray(batch[target_key])
+        action_dim = int(self.config["action_dim"])
+        horizon = int(self.config["horizon_length"])
         if actions.ndim == 2:
+            if self.config["action_chunking"]:
+                full_action_dim = action_dim * horizon
+                if actions.shape[-1] != full_action_dim:
+                    raise ValueError(
+                        "BCFlow action_chunking=True requires flat chunk targets "
+                        f"with last dim {full_action_dim} or sequence targets "
+                        f"[batch, {horizon}, {action_dim}], got shape {actions.shape}."
+                    )
+                return actions
+            if actions.shape[-1] != action_dim:
+                raise ValueError(
+                    f"BCFlow expected primitive action dim {action_dim}, got shape {actions.shape}."
+                )
             return actions
+        if actions.ndim != 3:
+            raise ValueError(
+                "BCFlow action targets must have shape [batch, action_dim] "
+                f"or [batch, horizon, action_dim], got shape {actions.shape}."
+            )
+        if actions.shape[-1] != action_dim:
+            raise ValueError(f"BCFlow expected action dim {action_dim}, got shape {actions.shape}.")
         if self.config["action_chunking"]:
-            return jnp.reshape(actions, (actions.shape[0], -1))
-        return actions[..., 0, :]
+            if actions.shape[1] != horizon:
+                raise ValueError(
+                    f"BCFlow expected chunk horizon {horizon}, got target shape {actions.shape}."
+                )
+            return jnp.reshape(actions, (actions.shape[0], horizon * action_dim))
+        return actions[:, 0, :]
+
+    def _chunk_valid_mask(self, batch, *, batch_size: int, dtype):
+        """Return a `[batch, horizon]` validity mask for chunked BC targets."""
+        horizon = int(self.config["horizon_length"])
+        valid = batch.get("valid")
+        if valid is None:
+            return jnp.ones((batch_size, horizon), dtype=dtype)
+        valid = jnp.asarray(valid, dtype=dtype)
+        if valid.ndim == 1:
+            if horizon != 1:
+                raise ValueError(
+                    f"BCFlow valid mask must be [batch, {horizon}], got shape {valid.shape}."
+                )
+            valid = valid[:, None]
+        if valid.ndim != 2 or valid.shape[1] != horizon:
+            raise ValueError(f"BCFlow valid mask must be [batch, {horizon}], got shape {valid.shape}.")
+        return valid
 
     def bc_flow_loss(self, batch, grad_params, rng):
         """Compute flow-matching behavior-cloning loss against dataset actions."""
@@ -52,14 +95,20 @@ class BCFlowAgent(flax.struct.PyTreeNode):
                 (pred - vel) ** 2,
                 (batch_size, self.config["horizon_length"], self.config["action_dim"]),
             )
-            flow_loss = jnp.mean(per_dim_loss * batch["valid"][..., None])
+            valid = self._chunk_valid_mask(batch, batch_size=batch_size, dtype=per_dim_loss.dtype)
+            masked_loss = per_dim_loss * valid[..., None]
+            normalizer = jnp.maximum(jnp.sum(valid) * self.config["action_dim"], 1.0)
+            flow_loss = jnp.sum(masked_loss) / normalizer
+            valid_fraction = jnp.mean(valid)
         else:
             flow_loss = jnp.mean((pred - vel) ** 2)
+            valid_fraction = jnp.asarray(1.0, dtype=flow_loss.dtype)
 
         return flow_loss, {
             "bc_flow_loss": flow_loss,
             "flow_pred_mean": pred.mean(),
             "flow_vel_mean": vel.mean(),
+            "flow_valid_fraction": valid_fraction,
         }
 
     @jax.jit

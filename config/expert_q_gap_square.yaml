@@ -1,18 +1,17 @@
-# DAgger v0 config draft.
-#
-# This file follows docs/CONFIG_SCHEMA_DECISIONS.md, not the legacy
-# DEFAULT_RECIPE schema in il/builders/config.py. The next implementation step
-# is to migrate the loader/builders to this schema.
+# Square intervention v0 with an expert-Q gap gate.
+# This is intentionally separate from config/dagger.yaml: DAgger relabels with
+# expert actions, while this config lets the expert execute when the gate fires.
 
 experiment:
-  name: square_dagger_bcflow_top50_500k
+  name: square_expert_q_gap_bcflow_top50_500k
   seed: 0
   output_dir: exp/runs
   tags:
     - square
-    - dagger
+    - intervention
+    - expert_q_gap
     - bcflow
-    - rlpd_expert
+    - q_expert
 
 env:
   kind: robomimic
@@ -55,8 +54,6 @@ actors:
     pretrained_path: exp/pretrained/rlpd_square_bc03_seed0_2m
     checkpoint_step: 2000000
     policy_view: true
-    # Keep expert network config from the pretrained artifact to avoid
-    # state-dict shape mismatches. Runtime still records the resolved config.
     network: {}
 
 training:
@@ -85,10 +82,16 @@ replay:
       boundary_mode: drop
 
 intervention:
-  enabled: false
+  enabled: true
+  # expert_q_gap needs an expert proposal at the same state, so query expert
+  # each rollout step even when the learner action is executed.
   expert_query: always
   gate:
-    kind: always_off
+    kind: expert_q_gap
+    threshold: 0.5
+    intervention_prob: 0.9
+    intervention_horizon: 10
+    q_agg: min
 
 storage:
   store_executed_action: true
@@ -113,13 +116,14 @@ logging:
   wandb:
     enabled: true
     project: intervention_learning
-    group: square_dagger_v0
-    name: square_dagger_bcflow_top50_500k_seed0
+    group: square_expert_q_gap_v0
+    name: square_expert_q_gap_bcflow_top50_500k_seed0
     tags:
       - square
-      - dagger
+      - intervention
+      - expert_q_gap
       - bcflow
-      - rlpd_expert
+      - q_expert
 
 checkpointing:
   interval: 100000

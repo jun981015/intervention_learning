@@ -32,6 +32,36 @@ next_obs, reward, terminated, truncated, info = env.step(action)
 learner와 expert action을 gate 전에 둘 다 뽑는 것이 중요하다. 그래야 같은 state에서
 learner proposal, expert proposal, 실제 실행 action을 모두 저장할 수 있다.
 
+
+## Expert-Q Gap Gate
+
+`expert_q_gap`은 expert가 action을 실행할지 정하는 intervention trigger다. policy selector나 expert query 여부 자체가 아니다.
+
+```text
+q_gap = Q_expert(s, a_expert) - Q_expert(s, a_learner)
+signal = q_gap > threshold
+```
+
+signal이 켜지면 `intervention_prob` 확률로 expert intervention을 시작하고, 시작 후에는
+`intervention_horizon` step 동안 expert가 연속 제어한다. 현재 설계에서는 `p_off`를 두지 않는다.
+
+이 gate는 RLPD 전용으로 구현하지 않는다. gate의 책임과 expert agent/adapter의 책임을 분리한다.
+
+Gate 책임:
+
+- learner/expert action proposal을 같은 state에서 비교한다.
+- `q_agg` 문자열을 expert Q API에 넘긴다.
+- expert 내부의 `critic`, `q`, `qf` 같은 module 이름을 직접 탐색하지 않는다.
+
+Expert agent/adapter 책임:
+
+- `evaluate_q(observations, actions, q_agg=...)` 또는 `q_values(observations, actions, q_agg=...)`를 제공한다.
+- multi-Q head shape과 `min|mean|max` aggregation은 agent/adapter 내부에서 처리한다.
+- 필요하면 raw head 확인용으로 `evaluate_q_heads(observations, actions)`를 추가 제공한다.
+
+SAC/RLPD, TD3-BC처럼 action-value critic이 있는 expert는 agent/adapter에서 이 API를 맞추면 같은 방식으로 쓸 수 있다. PPO처럼 V-only critic만
+있는 expert는 이 gate를 바로 쓸 수 없고 action-value head 또는 adapter가 필요하다.
+
 ## RLPD Expert Weight 로딩
 
 expert policy는 이 repo의 `ACRLPDAgent` checkpoint layout과 config에 맞춰 로드한다.
@@ -106,10 +136,17 @@ state-dict layout과 config에 맞아야 한다.
 이 smoke test는 데이터 흐름 검증이다. 실제 online rollout은 `il/train.py`가 recipe 기반으로
 수행한다.
 
+
+
+Action chunk TODO: 현재 train rollout은 primitive action 기준이다. chunk policy는 나중에 `collections.deque`로
+learner/expert queue를 따로 두고, queue가 비었을 때만 policy를 query하는 방식으로 정리한다. learner와 expert의
+horizon은 서로 다를 수 있어야 한다. policy adapter는 `full_action_chunk`를 항상 `(horizon, action_dim)`으로 제공하고,
+controller switch 시 stale chunk를 막기 위해 양쪽 queue를 clear하는 방향을 우선 검토한다.
+
 ## Unified Train Loop
 
 실행 진입점은 `il/train.py`다. 이 파일은 build만 담당하고, 실제 env-step loop는
-`il/loops/recipe.py`의 `run_train_loop()`가 담당한다.
+`il/loops/train_loop.py`의 `run_train_loop()`가 담당한다.
 
 loop v0 동작:
 

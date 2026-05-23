@@ -15,7 +15,7 @@ It is not yet a general-purpose algorithm framework. Most assumptions are accept
 - `il/builders/config.py::DEFAULT_RECIPE` is strongly tied to Square, BCFlow, RLPD, and `expert_actions`.
 - Public YAML configs are converted into a legacy internal recipe by `new_schema_to_legacy_recipe()`.
 - `replay.sampling` currently selects one primary sampling spec, preferring `bc` over `rl`; named multi-batch sampling is not fully wired.
-- Update objective is inferred from `learner_kind.startswith("bc_")`; hybrid learners will need an explicit recipe.
+- Update objective inference has been removed. Update specs now define target actor, replay source, sampling knobs, and optional `target_action_key`; the agent kind owns its loss in `agent.update(batch)`.
 - Several YAML fields are not fully consumed at runtime: `update_interval`, `updates_per_step`, eval video/action mode fields, and checkpoint save flags.
 - Env registry currently contains only `robomimic_lowdim`.
 - Robomimic dataset paths and sparse success reward are hardcoded in `il/envs/robomimic_lowdim.py`.
@@ -36,10 +36,9 @@ It is not yet a general-purpose algorithm framework. Most assumptions are accept
 1. Wire `update_interval`, `updates_per_step`, and checkpoint save flags into the train loop.
 2. Make stdout logging metric selection algorithm-agnostic.
 3. Support true named multi-batch replay sampling for RL+BC hybrid learners.
-4. Replace `kind.startswith("bc_")` objective inference with explicit update specs or actor update recipes.
-5. Add a second env registry entry and make dataset path/reward mode configurable.
-6. Implement action chunk queues when chunk semantics become central.
-7. Add image-policy network builders after lowdim replay/env paths are stable.
+4. Add a second env registry entry and make dataset path/reward mode configurable.
+5. Implement action chunk queues when chunk semantics become central.
+6. Add image-policy network builders after lowdim replay/env paths are stable.
 
 ## Current Judgment
 

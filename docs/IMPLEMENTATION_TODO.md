@@ -31,7 +31,47 @@
 - 2026-05-18 기준 남은 작업: [STATUS_2026-05-18.md#아직-남은-작업](STATUS_2026-05-18.md#아직-남은-작업)
 - 작업 진행 방식과 기준 원칙: [WORKFLOW.md#기준-원칙](WORKFLOW.md#기준-원칙)
 
-### 2. Online rollout smoke를 실제 Robomimic env에서 검증
+### Expert-Q gap gate smoke
+
+`expert_q_gap` gate는 구현되어 있지만 실제 pretrained expert checkpoint를 붙인 Robomimic rollout smoke가 아직 필요하다.
+
+- gate config와 의미: [CONFIG_SCHEMA_DECISIONS.md#intervention](CONFIG_SCHEMA_DECISIONS.md#intervention)
+- rollout에서 gate가 호출되는 위치: [PIPELINE.md#unified-train-loop](PIPELINE.md#unified-train-loop)
+- 예시 config: [../config/expert_q_gap_square.yaml](../config/expert_q_gap_square.yaml)
+
+검증 포인트:
+
+- RLPD expert는 `evaluate_q(obs, action, q_agg=...)` 경로로 Q gap을 계산한다.
+- future SAC/TD3-BC expert는 `evaluate_q(..., q_agg=...)` 또는 `q_values(..., q_agg=...)`만 제공하면 같은 gate를 쓸 수 있어야 한다.
+- PPO처럼 V-only expert는 action-value head가 없으면 이 gate를 쓰지 못한다는 에러가 나와야 한다.
+- `gate/q_expert`, `gate/q_learner`, `gate/q_gap`, `gate/signal`, `gate/intervention_started`가 로그에 찍히는지 확인한다.
+
+
+### 2. Dataset adapter / canonicalization interface 추가
+
+offline demo dataset은 source마다 `actions`의 의미가 다르다. `ReplayBuffer` loader가 암묵적으로
+`actions -> expert_actions`를 복사하지 말고, dataset 종류별 adapter가 명시적으로 우리 canonical replay
+schema로 변환해야 한다. 이 작업은 offline demo prefill과 DAgger/BC target 안정성에 직접 연결되므로
+우선순위를 높게 둔다.
+
+- initial replay prefill: [REPLAY_AND_UPDATES.md#initial-replay-prefill](REPLAY_AND_UPDATES.md#initial-replay-prefill)
+- transition schema: [REPLAY_AND_UPDATES.md#transition-schema](REPLAY_AND_UPDATES.md#transition-schema)
+- buffer 역할: [PIPELINE.md#buffer-역할](PIPELINE.md#buffer-역할)
+
+결정해야 할 것:
+
+- `adapter: replay_npz`는 schema-compatible saved replay만 그대로 로드한다.
+- `adapter: demo_actions_are_expert` 같은 명시적 adapter에서만 `expert_actions = actions`를 채운다.
+- raw robomimic hdf5, saved replay npz, intervention replay npz를 각각 어떤 adapter로 둘지 정한다.
+- missing `learner_actions`, log-prob, controller/gate metadata를 어떤 default로 채울지 정한다.
+- adapter 적용 위치는 `build_buffers()` prefill 경로가 자연스럽다.
+
+주의:
+
+- dataset semantics 없이 loader 내부에서 `actions -> expert_actions`를 자동 복사하지 않는다.
+- `target_action_key="expert_actions"` update를 쓰는 prefill dataset은 adapter 단계에서 finite expert labels를 보장해야 한다.
+
+### 3. Online rollout smoke를 실제 Robomimic env에서 검증
 
 restored learner/expert와 gate를 실제 Square env에 붙여 100 step 정도를 돌리고, replay에 의도한
 metadata가 모두 저장되는지 확인한다.
@@ -49,7 +89,7 @@ metadata가 모두 저장되는지 확인한다.
 - `controller_ids`, `gating_reasons`, `gating_scores`, `interventions`가 episode 흐름과 맞아야 한다.
 - timeout/truncation에서 `masks`가 bootstrap 가능한 형태로 유지되는지 확인한다.
 
-### 3. Replay save/load round-trip test 추가
+### 4. Replay save/load round-trip test 추가
 
 온라인 rollout으로 저장한 replay buffer를 다시 로드했을 때 schema, shape, episode metadata,
 image metadata가 보존되는지 테스트한다.
@@ -66,7 +106,7 @@ image metadata가 보존되는지 테스트한다.
 - image observation은 current frame만 저장하고, sample 시 `i+1` frame으로 `next_observations`가 복원되는지 확인한다.
 - prefill된 demo와 online rollout의 episode id 충돌을 피하는지 확인한다.
 
-### 4. DAgger / BC update 경로 검증
+### 5. DAgger / BC update 경로 검증
 
 rollout 중 저장된 `expert_actions`를 이용해서 BCFlow learner update가 실제로 도는지 확인한다.
 
@@ -81,7 +121,7 @@ rollout 중 저장된 `expert_actions`를 이용해서 BCFlow learner update가 
 - 완료: `expert_actions`에 NaN/Inf가 있으면 BC update 직전에 `ValueError`로 중단한다.
 - online/demo/intervention buffer 중 어떤 source에서 BC batch를 뽑는지 config로 명확히 한다.
 
-### 5. Demo / intervention buffer에서 BC loss를 learner update에 섞기
+### 6. Demo / intervention buffer에서 BC loss를 learner update에 섞기
 
 intervention learning의 핵심 경로다. RL update와 별개로 demo/intervention에서 BC loss를 뽑아
 learner policy에 추가하는 recipe를 명확히 구현한다.
@@ -99,18 +139,39 @@ learner policy에 추가하는 recipe를 명확히 구현한다.
 
 ## 다음 단계 TODO
 
-### 6. Action chunk queue 정교화
+### 7. Action chunk queue 정교화
 
 현재 v0 train loop는 primitive action 기준이다. BCFlow/RLPD policy가 action chunk를 출력하는 경우,
-learner와 expert가 각각 독립적인 chunk queue를 가져야 한다.
+매 step 새 chunk를 뽑고 첫 action만 쓰면 chunk policy의 temporal semantics가 깨진다. Python
+`collections.deque` 기반으로 learner/expert action queue를 따로 관리하는 방향으로 둔다.
 
 - pipeline 제한 사항: [PIPELINE.md#unified-train-loop](PIPELINE.md#unified-train-loop)
 - action chunking을 미룬 이유: [STATUS_2026-05-18.md#아직-남은-작업](STATUS_2026-05-18.md#아직-남은-작업)
 - n-step과 action chunk 관계: [REPLAY_AND_UPDATES.md#n-step-backup](REPLAY_AND_UPDATES.md#n-step-backup)
 
+추가 TODO:
+
+- BC action chunk horizon과 RL n-step backup horizon을 분리한다. 지금은 `horizon_length` 하나가 BC chunk target 길이와 RL n-step target 길이를 동시에 의미하므로, BC-only / RL-only / RL+BC 혼합 설정에서 불필요하게 묶인다.
+- 예시: BCFlow learner는 `bc_chunk_horizon=5`가 필요하지만, RLPD critic은 `td_n_step=1` 또는 `3`을 쓰고 싶을 수 있다. 반대로 SAC/RLPD actor는 primitive action만 내고 critic만 n-step을 쓸 수도 있다.
+- sampling config는 source별로 `sequence_length`를 명시하고, agent loss는 자신에게 필요한 action horizon과 TD horizon을 별도로 검증해야 한다.
+
+구현 방향:
+
+- policy adapter는 raw actor output을 canonical `full_action_chunk` shape `(horizon, action_dim)`으로 제공한다.
+- horizon=1 policy도 `full_action_chunk`를 `(1, action_dim)`으로 제공하면 queue 로직이 단순해진다.
+- learner와 expert의 horizon이 서로 달라도 같은 queue logic으로 처리해야 한다. 예: learner horizon=5, expert horizon=1 또는 그 반대.
+- rollout state는 `learner_queue: deque`, `expert_queue: deque`, `last_controller`를 가진다.
+- queue가 비었을 때만 해당 policy를 query하고, chunk를 queue에 `extend`한다.
+- gate 판단은 각 queue의 현재 candidate `queue[0]`를 사용한다.
+- 실제 env action은 선택된 controller queue에서만 `popleft()`한다.
+- controller가 learner에서 expert로, 또는 expert에서 learner로 바뀌면 stale chunk 방지를 위해 양쪽 queue를 clear한다.
+- `return_full_chunk=True`를 env step action으로 직접 쓰는 경로는 train rollout에서는 피한다.
+
 검증 포인트:
 
-- gate가 expert로 바뀌어도 learner chunk queue의 의미가 깨지지 않아야 한다.
+- horizon=3이면 같은 controller가 유지되는 동안 policy query 1번으로 env step 3번을 진행한다.
+- learner horizon과 expert horizon이 서로 달라도 각자 queue refill/pop 주기가 독립적으로 동작한다.
+- gate가 expert로 바뀔 때 learner/expert queue가 clear되고 새 state 기준 chunk를 다시 샘플한다.
 - expert와 learner 모두 proposal은 저장하되, 실제 execute action은 gate decision과 일치해야 한다.
 - chunk index와 chunk length를 replay에 저장할지 결정한다.
 
@@ -176,7 +237,7 @@ env와 replay는 image observation 저장을 지원하지만, actor/critic netwo
 
 ### 10. Logger metric 확장
 
-현재 logger는 매 step metric을 accumulate하고 `log_interval`마다 평균 row를 기록한다. 다음 단계는 DAgger/intervention/RL 분석에 필요한 metric을 추가하는 것이다.
+현재 logger는 매 step metric을 accumulate하고 `log_interval`마다 interval row를 기록한다. 다음 단계는 DAgger/intervention/RL 분석에 필요한 metric을 추가하는 것이다. CSV write frequency, action entropy/variance, state distribution health metric은 우선순위 높게 본다.
 
 - logger 현재 구현과 metric TODO: [LOGGING_AND_METRICS.md](LOGGING_AND_METRICS.md)
 
@@ -186,6 +247,9 @@ env와 replay는 image observation 저장을 지원하지만, actor/critic netwo
 - update skip count와 실제 gradient update count를 기록한다.
 - batch source fraction, terminal/timeout/mask 통계를 기록한다.
 - learner/expert action L2, action clipping fraction, gripper stat을 기록한다.
+- action entropy와 action variance를 기록해서 policy collapse 또는 과도한 randomization을 본다.
+- state distribution health를 기록한다. 우선 online running stat과 demo/offline baseline stat의 mean/std drift, out-of-dataset z-score fraction을 본다.
+- CSV write frequency와 append/rotate 정책을 config로 분리한다. 긴 run에서 flush마다 전체 CSV rewrite를 피한다.
 - gate intervention rate와 expert execute rate를 기록한다.
 
 ## 최근 실험 후속

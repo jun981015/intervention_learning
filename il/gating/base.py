@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -18,6 +18,8 @@ class ControllerGate(Protocol):
         learner: PolicyOutput,
         expert: PolicyOutput,
         rng: np.random.Generator,
+        expert_agent: Any | None = None,
+        action_dim: int | None = None,
     ) -> GateDecision:
         """Choose which policy should control the current environment step."""
         ...

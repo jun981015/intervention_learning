@@ -85,6 +85,8 @@ target = r_t + gamma r_{t+1} + ... + gamma^{n-1} r_{t+n-1}
 v0에서는 `horizon_length=1`로 시작하지만, buffer API는 처음부터 n-step을 받을 수 있게 둔다.
 action chunking은 나중에 다루더라도 n-step backup 자체는 유지한다.
 
+TODO: BC action chunk horizon과 RL n-step backup horizon은 같은 개념이 아니다. 현재 config에서는 `horizon_length`가 두 역할을 같이 맡을 수 있어서, 이후에는 `bc_chunk_horizon`과 `td_n_step` 또는 sampling spec별 `sequence_length`로 분리한다. chunked BC는 `[B, chunk_horizon, action_dim]` target이 필요하고, RL critic은 `[B, td_n_step]` reward/mask/next observation sequence가 필요하다.
+
 ## Episode Boundary 처리
 
 v0에서는 `qc_base`와 동일하게 episode boundary를 n-step window 중간에 포함한 sample은
@@ -198,6 +200,12 @@ replay:
 `prefill`은 `online`, `intervention`, `demo` 중 원하는 buffer에 걸 수 있다. 물리 buffer는 계속
 분리되어 있고, prefill은 해당 buffer의 초기 `size/pointer`만 채운다.
 간단한 경우 `demo: /path/to/demo_replay.npz`처럼 path string만 넣어도 된다.
+
+
+High-priority TODO: dataset adapter / canonicalization interface가 필요하다. offline demo dataset은 source마다
+`actions`의 의미가 다르므로, loader가 암묵적으로 `actions -> expert_actions`를 복사하면 안 된다.
+예를 들어 `adapter: demo_actions_are_expert`처럼 명시된 경우에만 demo `actions`를 `expert_actions`로
+채우고, `adapter: replay_npz`는 schema-compatible saved replay를 그대로 읽는 식으로 분리한다.
 
 image replay도 같은 방식으로 로드된다. `.npz` 안의 `image_observations/<camera>` key는
 `ReplayBuffer.image_data[camera]`로 복원되고, sample 시 `i+1` frame으로 next image를 재구성한다.

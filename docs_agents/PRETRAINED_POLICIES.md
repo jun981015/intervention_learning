@@ -141,22 +141,15 @@ Future chunk queue work should use `PolicyOutput.info["full_action_chunk"]`.
 
 ## Current Combination
 
-RLPD expert and Flow BC learner can be passed directly to `choose_action()`.
+RLPD expert and Flow BC learner both return `PolicyOutput(action, log_prob, info)`.
+The online training path uses `il.loops.rollout.choose_rollout_action()` to sample learner/expert proposals, run the gate, and select the executed action.
+
+For direct policy checks, call each policy on the same observation:
 
 ```python
-action, learner_output, expert_output, decision = choose_action(
-    step=step,
-    observation=obs,
-    learner=learner,
-    expert=expert,
-    gate=gate,
-    learner_rng=learner_rng,
-    expert_rng=expert_rng,
-    gate_rng=gate_rng,
-)
+learner_output = learner.sample_action(obs, rng=learner_rng)
+expert_output = expert.sample_action(obs, rng=expert_rng)
 ```
-
-Both policies return `PolicyOutput(action, log_prob, info)`.
 
 ## Notes
 

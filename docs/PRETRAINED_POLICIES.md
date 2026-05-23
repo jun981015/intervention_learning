@@ -153,22 +153,15 @@ executed action: (7,)
 
 ## 현재 가능한 조합
 
-RLPD expert + Flow BC learner:
+RLPD expert + Flow BC learner는 둘 다 `PolicyOutput(action, log_prob, info)`를 반환한다.
+실제 online train path에서는 `il.loops.rollout.choose_rollout_action()`이 learner/expert proposal을 샘플링하고 gate decision을 거쳐 executed action을 고른다.
+
+직접 policy를 확인할 때는 각 policy를 같은 observation에서 호출하면 된다.
 
 ```python
-action, learner_output, expert_output, decision = choose_action(
-    step=step,
-    observation=obs,
-    learner=learner,
-    expert=expert,
-    gate=gate,
-    learner_rng=learner_rng,
-    expert_rng=expert_rng,
-    gate_rng=gate_rng,
-)
+learner_output = learner.sample_action(obs, rng=learner_rng)
+expert_output = expert.sample_action(obs, rng=expert_rng)
 ```
-
-두 policy 모두 `PolicyOutput(action, log_prob, info)`를 반환하므로 `choose_action()`에 그대로 넣을 수 있다.
 
 ## 주의점
 

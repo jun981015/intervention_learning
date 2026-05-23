@@ -29,7 +29,7 @@
 - Environment: `square-mh-low_dim`
 - Learner: RLPD/SAC-style online learner
 - Expert: restored RLPD/SAC checkpoint policy
-- Gate: random probability gate
+- Gate: random probability gate, expert-Q gap intervention gate
 - Replay: online/demo/intervention buffers, executed action, learner proposal, expert proposal, controller id, gate metadata, log-probs
 - Mixed sampling: `online`, `intervention`, `demo` buffer를 config 비율대로 섞어 batch 구성
 - N-step backup: `sample_sequence(batch_size, sequence_length, discount)` API 유지
