@@ -101,6 +101,23 @@ def _prepare_target_action_batch(target: ActorBundle, spec: dict[str, Any], batc
     return batch
 
 
+def _add_aux_batches(context: TrainContext, target: ActorBundle, spec: dict[str, Any], batch: dict, train_cfg: TrainingConfig) -> dict:
+    """Sample optional auxiliary batches and attach them with a name prefix."""
+    aux_batches = spec.get("aux_batches") or {}
+    if not aux_batches:
+        return batch
+    batch = dict(batch)
+    for aux_name, aux_spec in aux_batches.items():
+        aux_spec = dict(aux_spec)
+        aux_spec.setdefault("utd_ratio", train_cfg.utd_ratio)
+        aux_cfg = _make_update_config(context, target, aux_spec)
+        aux_source = _select_update_source(context, aux_spec, aux_cfg)
+        aux_batch = _sample_update_batch(aux_source, aux_cfg)
+        for key, value in aux_batch.items():
+            batch[f"{aux_name}_{key}"] = value
+    return batch
+
+
 def run_update_spec(context: TrainContext, spec: dict[str, Any]) -> dict[str, float]:
     """Run one configured learner update and return scalar metrics."""
     target = _target_bundle(context, spec.get("target", "learner"))
@@ -111,6 +128,7 @@ def run_update_spec(context: TrainContext, spec: dict[str, Any]) -> dict[str, fl
     source = _select_update_source(context, spec, train_cfg)
     batch = _sample_update_batch(source, train_cfg)
     batch = _prepare_target_action_batch(target, spec, batch)
+    batch = _add_aux_batches(context, target, spec, batch, train_cfg)
 
     if train_cfg.utd_ratio > 1:
         agent, info = target.agent.batch_update(batch)

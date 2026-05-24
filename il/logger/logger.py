@@ -39,6 +39,7 @@ _LAST_VALUE_SUFFIXES = (
 
 _SUM_VALUE_PREFIXES = (
     "routing/",
+    "gate/",
 )
 
 _LAST_VALUE_PREFIXES = (
@@ -219,10 +220,16 @@ class NullLogger:
 
 
 def _is_sum_value_key(key: str) -> bool:
-    return key.startswith(_SUM_VALUE_PREFIXES) and not key.endswith("_total")
+    if key.startswith("routing/"):
+        return not key.endswith("_total")
+    if key.startswith("gate/"):
+        return key.endswith("_steps") or key.endswith("_count")
+    return False
 
 
 def _is_last_value_key(key: str) -> bool:
+    if _is_sum_value_key(key):
+        return False
     return (
         key in _LAST_VALUE_KEYS
         or key.endswith(_LAST_VALUE_SUFFIXES)

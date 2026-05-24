@@ -626,6 +626,54 @@ def smoke_bc_flow(obs_dim: int, action_dim: int) -> None:
     assert np.isfinite(float(info["actor/bc_flow_loss"]))
 
 
+def smoke_bc_agents_with_aux_critic(obs_dim: int, action_dim: int) -> None:
+    """Check optional BC critics update and expose Q diagnostics without changing actor objective."""
+    for agent_cls, get_config, actor_name in (
+        (BCMLPAgent, get_bc_mlp_config, "bc_mlp"),
+        (BCFlowAgent, get_bc_flow_config, "bc_flow"),
+    ):
+        config = get_config()
+        config.horizon_length = 1
+        config.action_chunking = False
+        config.actor_hidden_dims = (32, 32)
+        config.value_hidden_dims = (32, 32)
+        config.batch_size = 4
+        config.train_critic = True
+        config.num_qs = 2
+        config.target_q_agg = "min"
+        config.grad_clip_norm = None
+        if actor_name == "bc_flow":
+            config.flow_steps = 2
+        if actor_name == "bc_mlp":
+            config.target_action_key = "expert_actions"
+
+        ex_observations = jnp.zeros((config.batch_size, obs_dim), dtype=jnp.float32)
+        ex_actions = jnp.zeros((config.batch_size, action_dim), dtype=jnp.float32)
+        agent = agent_cls.create(9, ex_observations, ex_actions, config)
+        batch = make_update_batch(config.batch_size, obs_dim, action_dim, config.horizon_length)
+        batch["expert_actions"] = batch["actions"].copy()
+
+        agent, info = agent.update(batch)
+        assert np.isfinite(float(info["critic/critic_loss"]))
+        assert np.isfinite(float(info["critic/q_mean"]))
+        if actor_name == "bc_flow":
+            assert np.isfinite(float(info["actor/bc_flow_loss"]))
+        else:
+            assert np.isfinite(float(info["actor/bc_loss"]))
+
+        q_heads = agent.evaluate_q_heads(
+            jnp.zeros((1, obs_dim), dtype=jnp.float32),
+            jnp.zeros((1, action_dim), dtype=jnp.float32),
+        )
+        q_value = agent.evaluate_q(
+            jnp.zeros((1, obs_dim), dtype=jnp.float32),
+            jnp.zeros((1, action_dim), dtype=jnp.float32),
+            q_agg="min",
+        )
+        assert q_heads.shape == (2, 1)
+        assert q_value.shape == (1,)
+
+
 def smoke_bc_flow_chunk_valid_handling(obs_dim: int, action_dim: int) -> None:
     """Check chunked BCFlow accepts valid single-step labels and rejects mismatched chunks."""
     config = get_bc_flow_config()
@@ -751,10 +799,40 @@ def smoke_metric_logger_routing_aggregation() -> None:
             csv_enabled=True,
             wandb_enabled=False,
         )
-        logger.record({"loss": 1.0, "routing/demo_added": 0.0, "routing/demo_added_total": 0.0}, step=1)
-        logger.record({"loss": 3.0, "routing/demo_added": 2.0, "routing/demo_added_total": 2.0}, step=2)
         logger.record(
-            {"loss": 5.0, "routing/demo_added": 0.0, "routing/demo_added_total": 2.0},
+            {
+                "loss": 1.0,
+                "routing/demo_added": 0.0,
+                "routing/demo_added_total": 0.0,
+                "gate/expert_execute_steps": 1.0,
+                "gate/expert_execute_steps_total": 1.0,
+                "gate/intervention_started_count": 1.0,
+                "gate/intervention_started_total": 1.0,
+            },
+            step=1,
+        )
+        logger.record(
+            {
+                "loss": 3.0,
+                "routing/demo_added": 2.0,
+                "routing/demo_added_total": 2.0,
+                "gate/expert_execute_steps": 0.0,
+                "gate/expert_execute_steps_total": 1.0,
+                "gate/intervention_started_count": 0.0,
+                "gate/intervention_started_total": 1.0,
+            },
+            step=2,
+        )
+        logger.record(
+            {
+                "loss": 5.0,
+                "routing/demo_added": 0.0,
+                "routing/demo_added_total": 2.0,
+                "gate/expert_execute_steps": 1.0,
+                "gate/expert_execute_steps_total": 2.0,
+                "gate/intervention_started_count": 0.0,
+                "gate/intervention_started_total": 1.0,
+            },
             step=3,
             force_flush=True,
         )
@@ -765,6 +843,10 @@ def smoke_metric_logger_routing_aggregation() -> None:
     assert rows[0]["loss"] == 3.0
     assert rows[0]["routing/demo_added"] == 2.0
     assert rows[0]["routing/demo_added_total"] == 2.0
+    assert rows[0]["gate/expert_execute_steps"] == 2.0
+    assert rows[0]["gate/expert_execute_steps_total"] == 2.0
+    assert rows[0]["gate/intervention_started_count"] == 1.0
+    assert rows[0]["gate/intervention_started_total"] == 1.0
 
 def smoke_bc_flow_policy_checkpoint(obs_dim: int, action_dim: int) -> None:
     """Check source-agnostic BC flow checkpoint restore through the policy adapter."""
@@ -832,6 +914,8 @@ def main() -> None:
     print("bc mlp smoke ok")
     smoke_bc_flow(args.obs_dim, args.action_dim)
     print("bc flow smoke ok")
+    smoke_bc_agents_with_aux_critic(args.obs_dim, args.action_dim)
+    print("bc agents auxiliary critic smoke ok")
     smoke_bc_flow_chunk_valid_handling(args.obs_dim, args.action_dim)
     print("bc flow chunk valid handling smoke ok")
     smoke_bc_flow_policy_checkpoint(args.obs_dim, args.action_dim)

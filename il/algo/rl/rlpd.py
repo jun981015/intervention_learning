@@ -98,10 +98,12 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
 
     def actor_loss(self, batch, grad_params, rng):
         """Compute SAC policy, temperature, and optional BC regularization losses."""
+        bc_observations = batch.get("bc_observations", batch["observations"])
+        bc_raw_actions = batch.get("bc_actions", batch["actions"])
         if self.config["action_chunking"]:
-            batch_actions = jnp.reshape(batch["actions"], (batch["actions"].shape[0], -1))
+            bc_actions = jnp.reshape(bc_raw_actions, (bc_raw_actions.shape[0], -1))
         else:
-            batch_actions = batch["actions"][..., 0, :] # take the first action
+            bc_actions = bc_raw_actions[..., 0, :] # take the first action
 
         dist = self.network.select('actor')(batch['observations'], params=grad_params)
         actions = dist.sample(seed=rng)
@@ -118,8 +120,11 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
         entropy = -jax.lax.stop_gradient(log_probs).mean()
         alpha_loss = (alpha * (entropy - self.config['target_entropy'])).mean()
 
-        # BC loss.
-        bc_loss = -dist.log_prob(jnp.clip(batch_actions, -1 + 1e-5, 1 - 1e-5)).mean() * self.config["bc_alpha"]
+        # BC loss. If an auxiliary `bc_*` batch exists, it is typically sampled
+        # from demos/expert data; otherwise this preserves the old in-batch BC.
+        bc_dist = self.network.select('actor')(bc_observations, params=grad_params)
+        bc_loss_unscaled = -bc_dist.log_prob(jnp.clip(bc_actions, -1 + 1e-5, 1 - 1e-5)).mean()
+        bc_loss = bc_loss_unscaled * self.config["bc_alpha"]
 
         total_loss = actor_loss + alpha_loss + bc_loss
 
@@ -128,6 +133,7 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
             'actor_loss': actor_loss,
             'alpha_loss': alpha_loss,
             'bc_loss': bc_loss,
+            'bc_loss_unscaled': bc_loss_unscaled,
             'alpha': alpha,
             'entropy': -log_probs.mean(),
             'q': q.mean(),

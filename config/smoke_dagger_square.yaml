@@ -1,0 +1,112 @@
+# Real-env smoke for pretrained BCFlow learner + RLPD expert DAgger relabeling.
+# This is not a learning run. It checks that robomimic Square rollout queries
+# both policies, executes learner actions, and stores finite expert labels.
+
+experiment:
+  name: square_dagger_real_env_smoke
+  seed: 0
+  output_dir: exp/smoke
+  tags:
+    - square
+    - smoke
+    - dagger
+    - bcflow_learner
+    - rlpd_expert
+
+env:
+  kind: robomimic
+  name: square-mh-low_dim
+  observation_mode: lowdim
+  max_episode_steps: 400
+  render_offscreen: false
+  reward_scale: 1.0
+  reward_shift: 0.0
+  build_eval_env: false
+  eval_seed_offset: 10000
+
+actors:
+  learner:
+    kind: bc_flow
+    trainable: false
+    pretrained_path: exp/pretrained/bcflow_square_top50_actorln_seed0_500k
+    checkpoint_step: 500000
+    policy_view: true
+    network: {}
+    optimization: {}
+    update: {}
+
+  expert:
+    kind: rlpd
+    trainable: false
+    pretrained_path: exp/pretrained/rlpd_square_bc03_seed0_2m
+    checkpoint_step: 2000000
+    policy_view: true
+    network: {}
+    optimization: {}
+    update: {}
+
+training:
+  total_steps: 100
+  start_training: 1000000
+  update_interval: 1
+  updates_per_step: 0
+  action_mode: first_action
+  reset_on_done: true
+
+replay:
+  buffers:
+    online_size: 1024
+    demo_size: 1024
+    intervention_size: 1024
+  prefill: {}
+  routing:
+    demo_insert_mode: none
+    include_failed_interventions: false
+  sampling:
+    bc:
+      source:
+        online: 1.0
+      sequence_length: 5
+      batch_size: 4
+      boundary_mode: drop
+
+intervention:
+  enabled: false
+  expert_query: always
+  gate:
+    kind: always_off
+
+storage:
+  store_executed_action: true
+  store_learner_action: true
+  store_expert_action: true
+  store_log_prob: true
+  store_gate_score: true
+  store_episode_metadata: true
+
+evaluation:
+  interval: 0
+  episodes: 0
+  seed: 1000
+  render_video: false
+  video_episodes: 0
+  action_mode: first_action
+
+logging:
+  stdout_interval: 20
+  csv: true
+  jsonl: true
+  wandb:
+    enabled: false
+    project: intervention_learning
+    group: smoke
+    name: square_dagger_real_env_smoke_seed0
+    tags:
+      - smoke
+      - dagger
+
+checkpointing:
+  interval: 0
+  save_final: false
+  save_replay: true
+  keep_last: 1

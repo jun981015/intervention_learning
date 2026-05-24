@@ -15,7 +15,7 @@ from il.buffers.schema import step_record_to_transition
 from il.builders.types import TrainContext
 from il.evaluation import evaluate_policy
 from il.logger import MetricLogger
-from il.loops.rollout import choose_rollout_action
+from il.loops.rollout import choose_rollout_action, policy_observation
 from il.loops.updates import run_update_spec
 from il.utils.flax_utils import save_agent
 from il.utils.types import ControllerId, GateDecision, StepRecord
@@ -67,9 +67,13 @@ def _save_buffers(context: TrainContext) -> None:
 
 def _gate_metric_payload(decision: GateDecision) -> dict[str, float]:
     """Flatten one gate decision into scalar logging metrics."""
+    expert_execute = float(decision.controller_id == ControllerId.EXPERT)
+    intervention_started = float(decision.info.get("intervention_started", 0.0))
     payload: dict[str, float] = {
-        "gate/expert_execute_rate": float(decision.controller_id == ControllerId.EXPERT),
+        "gate/expert_execute_rate": expert_execute,
         "gate/learner_execute_rate": float(decision.controller_id == ControllerId.LEARNER),
+        "gate/expert_execute_steps": expert_execute,
+        "gate/intervention_started_count": intervention_started,
         "gate/reason": float(int(decision.reason)),
         "gate/score": float(decision.score),
     }
@@ -77,6 +81,63 @@ def _gate_metric_payload(decision: GateDecision) -> dict[str, float]:
         if isinstance(value, (bool, int, float, np.integer, np.floating)):
             payload[f"gate/{key}"] = float(value)
     return payload
+
+
+def _flatten_numeric_array(value) -> np.ndarray | None:
+    """Return a flat fp32 numeric array for health summaries."""
+    if isinstance(value, dict):
+        parts = [_flatten_numeric_array(item) for item in value.values()]
+        parts = [part for part in parts if part is not None and part.size > 0]
+        if not parts:
+            return None
+        return np.concatenate(parts, axis=0)
+    array = np.asarray(value)
+    if not np.issubdtype(array.dtype, np.number):
+        return None
+    if array.ndim > 1:
+        return None
+    return array.astype(np.float32, copy=False).reshape(-1)
+
+
+def _array_health(prefix: str, value) -> dict[str, float]:
+    """Summarize action/state arrays as fp32 scalar health metrics."""
+    array = _flatten_numeric_array(value)
+    if array is None or array.size == 0:
+        return {}
+    finite = np.isfinite(array)
+    finite_fraction = float(finite.mean())
+    if not bool(finite.any()):
+        return {
+            f"{prefix}/finite_fraction": finite_fraction,
+            f"{prefix}/numel": float(array.size),
+        }
+    finite_values = array[finite].astype(np.float32, copy=False)
+    return {
+        f"{prefix}/mean": float(np.mean(finite_values, dtype=np.float32)),
+        f"{prefix}/std": float(np.std(finite_values, dtype=np.float32)),
+        f"{prefix}/min": float(np.min(finite_values)),
+        f"{prefix}/max": float(np.max(finite_values)),
+        f"{prefix}/norm": float(np.linalg.norm(finite_values)),
+        f"{prefix}/finite_fraction": finite_fraction,
+        f"{prefix}/numel": float(array.size),
+    }
+
+
+def _rollout_health_metrics(observation, action: np.ndarray, learner_output, expert_output) -> dict[str, float]:
+    """Return low-volume action/state health metrics for one rollout step."""
+    metrics: dict[str, float] = {}
+    metrics.update(_array_health("state/observation", observation))
+    metrics.update(_array_health("action/executed", action))
+    metrics.update(_array_health("action/learner", learner_output.action))
+    metrics.update(_array_health("action/expert", expert_output.action))
+
+    learner_action = np.asarray(learner_output.action, dtype=np.float32).reshape(-1)
+    expert_action = np.asarray(expert_output.action, dtype=np.float32).reshape(-1)
+    if learner_action.shape == expert_action.shape and np.isfinite(learner_action).all() and np.isfinite(expert_action).all():
+        diff = learner_action - expert_action
+        metrics["action/learner_expert_l2"] = float(np.linalg.norm(diff))
+        metrics["action/learner_expert_linf"] = float(np.max(np.abs(diff)))
+    return metrics
 
 
 def run_train_loop(context: TrainContext) -> TrainContext:
@@ -102,6 +163,8 @@ def run_train_loop(context: TrainContext) -> TrainContext:
     recent_lengths: list[int] = []
     recent_successes: list[float] = []
     route_totals = _empty_route_metrics()
+    expert_execute_total = 0
+    intervention_started_total = 0
 
     start_time = time.time()
     last_log_time = start_time
@@ -177,6 +240,10 @@ def run_train_loop(context: TrainContext) -> TrainContext:
                     if "smaller than sequence_length" not in str(exc):
                         raise
 
+        gate_metrics = _gate_metric_payload(decision)
+        expert_execute_total += int(gate_metrics.get("gate/expert_execute_steps", 0.0))
+        intervention_started_total += int(gate_metrics.get("gate/intervention_started_count", 0.0))
+
         now = time.time()
         force_log = log_interval > 0 and step % log_interval == 0
         payload = {
@@ -191,7 +258,10 @@ def run_train_loop(context: TrainContext) -> TrainContext:
             "env/recent_success_rate": float(np.mean(recent_successes)) if recent_successes else 0.0,
             **{f"routing/{key}": float(value) for key, value in route_metrics.items()},
             **{f"routing/{key}_total": float(value) for key, value in route_totals.items()},
-            **_gate_metric_payload(decision),
+            **gate_metrics,
+            "gate/expert_execute_steps_total": float(expert_execute_total),
+            "gate/intervention_started_total": float(intervention_started_total),
+            **_rollout_health_metrics(policy_observation(observation, context), action, learner_output, expert_output),
             **step_update_metrics,
         }
         if force_log:

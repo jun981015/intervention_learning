@@ -179,8 +179,10 @@ def _new_actor_to_legacy(actor: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _first_sampling_spec(sampling: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _first_sampling_spec(sampling: dict[str, Any], *, learner_kind: str | None = None) -> tuple[str, dict[str, Any]]:
     """Return the primary named sampling spec used by the current v0 train loop."""
+    if learner_kind in {"rlpd", "acrlpd", "sac"} and "rl" in sampling:
+        return "rl", sampling["rl"]
     if "bc" in sampling:
         return "bc", sampling["bc"]
     if "rl" in sampling:
@@ -237,7 +239,9 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
         "eval_seed_offset": int(env.get("eval_seed_offset", 10_000)),
     }
 
-    sampling_name, sampling = _first_sampling_spec(replay.get("sampling") or {})
+    learner_kind = str(actors["learner"].get("kind", ""))
+    all_sampling = replay.get("sampling") or {}
+    sampling_name, sampling = _first_sampling_spec(all_sampling, learner_kind=learner_kind)
     batch_size = int(
         sampling.get(
             "batch_size",
@@ -308,6 +312,17 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
         update_spec["target_action_key"] = target_action_key
     if sampling_fractions is not None:
         update_spec["sampling_fractions"] = sampling_fractions
+    if sampling_name != "bc" and "bc" in all_sampling:
+        bc_sampling = all_sampling["bc"]
+        bc_source, bc_sampling_fractions = _source_to_legacy(bc_sampling.get("source", "demo"))
+        bc_spec = {
+            "source": bc_source,
+            "batch_size": int(bc_sampling.get("batch_size", batch_size)),
+            "horizon_length": int(bc_sampling.get("sequence_length", 1)),
+        }
+        if bc_sampling_fractions is not None:
+            bc_spec["sampling_fractions"] = bc_sampling_fractions
+        update_spec["aux_batches"] = {"bc": bc_spec}
     recipe["updates"] = [update_spec]
 
     recipe["_public_schema"] = copy.deepcopy(config)

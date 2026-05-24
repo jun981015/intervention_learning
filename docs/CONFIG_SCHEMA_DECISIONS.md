@@ -121,7 +121,8 @@ actors:
 - activation은 network field로 둔다.
 - RLPD처럼 actor/critic이 나뉘면 `actor_activation`, `critic_activation`처럼 명시한다.
 - BCFlow처럼 actor만 있으면 `actor_activation` 또는 builder fallback으로 `activation`을 허용할 수 있다.
-- `update`에는 algorithm-specific update 옵션만 둔다. 예: BC 계열의 `target_action_key`.
+- BC 계열도 `update.train_critic: true`를 주면 보조 critic을 학습할 수 있다. 이 critic은 진단, value 시각화, gate용 Q API를 위한 것이며 actor/policy loss에는 쓰지 않는다.
+- `update`에는 algorithm-specific update 옵션만 둔다. 예: BC 계열의 `target_action_key`, `train_critic`, `critic_loss_coef`.
 
 ### `training`
 

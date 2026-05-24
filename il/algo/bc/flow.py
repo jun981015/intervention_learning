@@ -10,6 +10,14 @@ import optax
 
 from il.utils.flax_utils import ModuleDict, TrainState, nonpytree_field
 from il.networks.flow import ActorVectorField
+from il.algo.bc.critic import (
+    aggregate_q_heads,
+    critic_enabled,
+    critic_td_loss,
+    make_critic_network_defs,
+    polyak_update_target_critic,
+    select_last_next_observations,
+)
 
 
 class BCFlowAgent(flax.struct.PyTreeNode):
@@ -22,6 +30,31 @@ class BCFlowAgent(flax.struct.PyTreeNode):
     rng: Any
     network: Any
     config: Any = nonpytree_field()
+
+    def _critic_enabled(self) -> bool:
+        """Return whether this BC actor also trains an auxiliary critic."""
+        return critic_enabled(self.config)
+
+    def _sample_next_actions_for_critic(self, batch, rng):
+        """Sample bootstrap actions for critic targets without actor-loss coupling."""
+        next_observations = select_last_next_observations(batch)
+        return self.sample_actions(next_observations, rng=rng)
+
+    def critic_loss(self, batch, grad_params, rng):
+        """Compute auxiliary TD critic loss; actor loss remains pure BC."""
+        next_actions = self._sample_next_actions_for_critic(batch, rng)
+        return critic_td_loss(self.network, self.config, batch, grad_params, next_actions)
+
+    @jax.jit
+    def evaluate_q_heads(self, observations, actions):
+        """Evaluate all auxiliary critic heads for diagnostics or gates."""
+        if not self._critic_enabled():
+            raise ValueError("BCFlowAgent was created with train_critic=False.")
+        return self.network.select("critic")(observations, actions)
+
+    def evaluate_q(self, observations, actions, *, q_agg: str = "min"):
+        """Evaluate aggregated auxiliary Q values for arbitrary action proposals."""
+        return aggregate_q_heads(self.evaluate_q_heads(observations, actions), q_agg)
 
     def _flatten_batch_actions(self, batch):
         """Return action targets in the actor output shape and validate chunk semantics."""
@@ -113,10 +146,20 @@ class BCFlowAgent(flax.struct.PyTreeNode):
 
     @jax.jit
     def total_loss(self, batch, grad_params, rng=None):
-        """Compute BC flow loss and prefix its metrics as actor metrics."""
+        """Compute BC flow loss plus optional critic diagnostics loss."""
         rng = rng if rng is not None else self.rng
-        loss, info = self.bc_flow_loss(batch, grad_params, rng)
-        return loss, {f"actor/{key}": value for key, value in info.items()}
+        rng, actor_rng, critic_rng = jax.random.split(rng, 3)
+
+        actor_loss, actor_info = self.bc_flow_loss(batch, grad_params, actor_rng)
+        info = {f"actor/{key}": value for key, value in actor_info.items()}
+        loss = actor_loss
+
+        if self._critic_enabled():
+            critic_loss, critic_info = self.critic_loss(batch, grad_params, critic_rng)
+            info.update({f"critic/{key}": value for key, value in critic_info.items()})
+            loss = loss + float(self.config["critic_loss_coef"]) * critic_loss
+
+        return loss, info
 
     @staticmethod
     def _update(agent, batch):
@@ -128,6 +171,8 @@ class BCFlowAgent(flax.struct.PyTreeNode):
             return agent.total_loss(batch, grad_params, rng=rng)
 
         new_network, info = agent.network.apply_loss_fn(loss_fn=loss_fn)
+        if agent._critic_enabled():
+            polyak_update_target_critic(new_network, agent.config)
         return agent.replace(network=new_network, rng=new_rng), info
 
     @jax.jit
@@ -206,6 +251,10 @@ class BCFlowAgent(flax.struct.PyTreeNode):
             "actor_bc_flow": (actor_bc_flow_def, (ex_observations, full_actions, ex_times)),
             "actor_onestep_flow": (actor_onestep_flow_def, (ex_observations, full_actions)),
         }
+        if critic_enabled(config):
+            critic_def, target_critic_def = make_critic_network_defs(config)
+            network_info["critic"] = (critic_def, (ex_observations, full_actions))
+            network_info["target_critic"] = (target_critic_def, (ex_observations, full_actions))
         networks = {key: value[0] for key, value in network_info.items()}
         network_args = {key: value[1] for key, value in network_info.items()}
 
@@ -215,6 +264,8 @@ class BCFlowAgent(flax.struct.PyTreeNode):
         else:
             tx = optax.adam(learning_rate=config["lr"])
         params = network_def.init(init_rng, **network_args)["params"]
+        if critic_enabled(config):
+            params["modules_target_critic"] = params["modules_critic"]
         network = TrainState.create(network_def, params, tx=tx, grad_clip_norm=config["grad_clip_norm"])
 
         config["ob_dims"] = ob_dims
@@ -242,5 +293,13 @@ def get_config():
             fourier_feature_dim=64,
             weight_decay=0.0,
             grad_clip_norm=None,
+            train_critic=False,
+            critic_loss_coef=1.0,
+            value_hidden_dims=(512, 512, 512, 512),
+            layer_norm=True,
+            discount=0.99,
+            tau=0.005,
+            num_qs=2,
+            target_q_agg="min",
         )
     )

@@ -1,0 +1,121 @@
+# Real-env smoke for BCFlow + auxiliary critic.
+# This is not a meaningful experiment. It only checks that robomimic Square
+# env rollout, replay sampling, BC actor update, and optional critic update run
+# together without requiring pretrained expert weights.
+
+experiment:
+  name: square_bc_critic_real_env_smoke
+  seed: 0
+  output_dir: exp/smoke
+  tags:
+    - square
+    - smoke
+    - bc_flow
+    - auxiliary_critic
+
+env:
+  kind: robomimic
+  name: square-mh-low_dim
+  observation_mode: lowdim
+  max_episode_steps: 400
+  render_offscreen: false
+  reward_scale: 1.0
+  reward_shift: 0.0
+  build_eval_env: false
+  eval_seed_offset: 10000
+
+actors:
+  learner:
+    kind: bc_flow
+    trainable: true
+    pretrained_path: null
+    checkpoint_step: null
+    policy_view: true
+    network:
+      actor_hidden_dims: [64, 64]
+      actor_layer_norm: true
+      critic_hidden_dims: [64, 64]
+      critic_layer_norm: true
+      horizon_length: 1
+      action_chunking: false
+      flow_steps: 2
+      use_fourier_features: false
+      fourier_feature_dim: 64
+      num_qs: 2
+    optimization:
+      lr: 3.0e-4
+      batch_size: 4
+      grad_clip_norm: null
+      weight_decay: 0.0
+    update:
+      target_action_key: actions
+      train_critic: true
+      critic_loss_coef: 1.0
+      discount: 0.99
+      tau: 0.005
+      target_q_agg: min
+
+training:
+  total_steps: 20
+  start_training: 8
+  update_interval: 1
+  updates_per_step: 1
+  action_mode: first_action
+  reset_on_done: true
+
+replay:
+  buffers:
+    online_size: 256
+    demo_size: 16
+    intervention_size: 16
+  prefill: {}
+  routing:
+    demo_insert_mode: none
+    include_failed_interventions: false
+  sampling:
+    bc:
+      source:
+        online: 1.0
+      sequence_length: 1
+      batch_size: 4
+      boundary_mode: drop
+
+intervention:
+  enabled: false
+  expert_query: never
+  gate:
+    kind: always_off
+
+storage:
+  store_executed_action: true
+  store_learner_action: true
+  store_expert_action: false
+  store_log_prob: true
+  store_gate_score: true
+  store_episode_metadata: true
+
+evaluation:
+  interval: 0
+  episodes: 0
+  seed: 1000
+  render_video: false
+  video_episodes: 0
+  action_mode: first_action
+
+logging:
+  stdout_interval: 10
+  csv: true
+  jsonl: true
+  wandb:
+    enabled: false
+    project: intervention_learning
+    group: smoke
+    name: square_bc_critic_real_env_smoke_seed0
+    tags:
+      - smoke
+
+checkpointing:
+  interval: 0
+  save_final: true
+  save_replay: true
+  keep_last: 1

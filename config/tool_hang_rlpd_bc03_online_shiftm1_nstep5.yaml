@@ -1,0 +1,124 @@
+# ToolHang PH low-dim online RLPD expert training.
+# Goal: train an RLPD/SAC expert policy online with actor BC regularization.
+
+experiment:
+  name: tool_hang_rlpd_bc03_online_shiftm1_nstep5_seed0_2m
+  seed: 0
+  output_dir: exp/runs
+  tags:
+    - tool_hang
+    - ph
+    - rlpd
+    - online
+    - bc03
+    - reward_shift_m1
+    - nstep5
+
+env:
+  kind: robomimic
+  name: tool_hang-ph-low_dim
+  observation_mode: lowdim
+  max_episode_steps: 1000
+  render_offscreen: false
+  reward_scale: 1.0
+  reward_shift: -1.0
+  build_eval_env: false
+  eval_seed_offset: 10000
+
+actors:
+  learner:
+    kind: rlpd
+    trainable: true
+    pretrained_path: null
+    checkpoint_step: null
+    policy_view: true
+    network:
+      actor_hidden_dims: [512, 512, 512, 512]
+      critic_hidden_dims: [512, 512, 512, 512]
+      actor_layer_norm: true
+      critic_layer_norm: true
+      horizon_length: 5
+      action_chunking: false
+      num_qs: 2
+    optimization:
+      lr: 3.0e-4
+      batch_size: 256
+      grad_clip_norm: null
+    update:
+      discount: 0.99
+      tau: 0.005
+      target_q_agg: min
+      target_entropy: null
+      target_entropy_multiplier: 0.5
+      init_temp: 1.0
+      bc_alpha: 0.3
+
+training:
+  total_steps: 2000000
+  start_training: 1000
+  update_interval: 1
+  updates_per_step: 1
+  action_mode: first_action
+  reset_on_done: true
+
+replay:
+  buffers:
+    online_size: 2000000
+    demo_size: 16
+    intervention_size: 16
+  prefill: {}
+  routing:
+    demo_insert_mode: none
+    include_failed_interventions: false
+  sampling:
+    rl:
+      source:
+        online: 1.0
+      sequence_length: 5
+      batch_size: 256
+      boundary_mode: drop
+
+intervention:
+  enabled: false
+  expert_query: never
+  gate:
+    kind: always_off
+
+storage:
+  store_executed_action: true
+  store_learner_action: true
+  store_expert_action: false
+  store_log_prob: true
+  store_gate_score: true
+  store_episode_metadata: true
+
+evaluation:
+  interval: 0
+  episodes: 0
+  seed: 1000
+  render_video: false
+  video_episodes: 0
+  action_mode: first_action
+
+logging:
+  stdout_interval: 5000
+  csv: true
+  jsonl: true
+  wandb:
+    enabled: true
+    project: intervention_learning
+    group: tool_hang_rlpd_online
+    name: tool_hang_rlpd_bc03_online_shiftm1_nstep5_seed0_2m
+    tags:
+      - tool_hang
+      - rlpd
+      - online
+      - bc03
+      - reward_shift_m1
+      - nstep5
+
+checkpointing:
+  interval: 100000
+  save_final: true
+  save_replay: true
+  keep_last: 3

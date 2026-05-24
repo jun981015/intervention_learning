@@ -93,6 +93,18 @@ BCFlow learner update:
 - `learner_bc/actor/flow_pred_mean`
 - `learner_bc/actor/flow_vel_mean`
 
+BC auxiliary critic update, only when `train_critic=true`:
+
+- `learner_bc/critic/critic_loss`
+- `learner_bc/critic/q_mean`
+- `learner_bc/critic/q_min`
+- `learner_bc/critic/q_max`
+- `learner_bc/critic/target_q_mean`
+- `learner_bc/critic/td_error_abs_mean`
+- `learner_bc/critic/valid_fraction`
+
+Note: this critic is not used as an actor objective. It is trained for diagnostics, value plots, or Q-based gates.
+
 Eval:
 
 - `eval/return`
@@ -150,6 +162,9 @@ Eval:
 - `action/executed_variance`
 - `action/learner_variance`
 - `action/expert_variance`
+- `action/executed/norm`, `action/learner/norm`, `action/expert/norm`
+- `action/executed/finite_fraction`, `action/learner/finite_fraction`, `action/expert/finite_fraction`
+- `action/learner_expert_l2`, `action/learner_expert_linf`
 - `action/policy_entropy_mean`
 - `action/policy_entropy_min`
 - `action/gripper_mean`
@@ -167,6 +182,10 @@ Eval:
 
 우선순위 높음:
 
+- `state/observation/norm`
+- `state/observation/mean`
+- `state/observation/std`
+- `state/observation/finite_fraction`
 - `state/norm_mean`
 - `state/norm_std`
 - `state/dim_mean/*` 또는 selected dims
@@ -182,6 +201,12 @@ Eval:
 - offline demo 또는 초기 replay 기준 running stat과 online rollout stat이 얼마나 달라지는지 봐야 한다.
 - 모든 state dimension을 매번 stdout에 찍지 말고 JSONL/CSV/W&B 중심으로 기록한다.
 
+Precision / volume policy:
+
+- action/state health는 raw array를 저장하지 않고 scalar summary만 남긴다.
+- norm, mean, std, min/max, finite fraction은 fp32로 계산한다. 중요한 health metric은 fp16으로 낮추지 않는다.
+- image observation은 큰 배열이므로 현재 lowdim summary와 같은 방식으로 전부 flatten하지 않는다. image policy를 붙일 때 별도 image health metric을 설계한다.
+
 ### Gate / intervention
 
 우선순위 높음:
@@ -189,6 +214,10 @@ Eval:
 - `gate/intervention_rate`
 - `gate/expert_execute_rate`
 - `gate/learner_execute_rate`
+- `gate/expert_execute_steps`
+- `gate/expert_execute_steps_total`
+- `gate/intervention_started_count`
+- `gate/intervention_started_total`
 - `gate/score_mean`
 - `gate/score_max`
 - `gate/sticky_steps_mean`

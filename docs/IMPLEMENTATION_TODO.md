@@ -12,6 +12,7 @@
 
 - current status: [STATUS_2026-05-21.md](STATUS_2026-05-21.md)
 - logging and metrics: [LOGGING_AND_METRICS.md](LOGGING_AND_METRICS.md)
+- residual policy integration: [RESIDUAL_POLICY_ANALYSIS.md](RESIDUAL_POLICY_ANALYSIS.md)
 
 ### Config schema 결정 사항
 
@@ -19,6 +20,20 @@
 `replay.sampling` named batch 구조, intervention gate의 의미는 별도 결정 문서에 정리한다.
 
 - config schema decisions: [CONFIG_SCHEMA_DECISIONS.md](CONFIG_SCHEMA_DECISIONS.md)
+
+### Residual policy / ResFiT integration
+
+ResFiT의 핵심은 frozen BC/diffusion base policy 위에 residual actor를 올리는 것이다. 일반 RL과 달리
+actor는 residual `delta`만 출력하고, critic은 실제 실행 action `a_exec = clip(a_base + delta)`를
+학습한다. 세부 분석과 구현 로드맵은 [RESIDUAL_POLICY_ANALYSIS.md](RESIDUAL_POLICY_ANALYSIS.md)를 본다.
+
+우선순위:
+
+- `a_base`는 Q backprop에서 stop-gradient 처리한다.
+- replay schema에 `base_actions`, `residual_actions`, `next_base_actions`를 추가한다.
+- rollout에 base policy query와 residual composition path를 추가한다.
+- `residual_rlpd` 또는 동등한 config 표현을 정하고 actor/critic loss를 구현한다.
+- PER는 residual 구현 검증 후 안정화 옵션으로 미룬다.
 
 
 ### 1. 현재 문서와 코드 상태 동기화
@@ -33,7 +48,7 @@
 
 ### Expert-Q gap gate smoke
 
-`expert_q_gap` gate는 구현되어 있지만 실제 pretrained expert checkpoint를 붙인 Robomimic rollout smoke가 아직 필요하다.
+`expert_q_gap` gate는 실제 pretrained expert checkpoint를 붙인 Robomimic 100-step rollout smoke를 통과했다. 결과와 재실행 명령은 [REAL_ENV_SMOKE_TESTS.md#expert-q-gap-gate-real-env-smoke](REAL_ENV_SMOKE_TESTS.md#expert-q-gap-gate-real-env-smoke)를 본다.
 
 - gate config와 의미: [CONFIG_SCHEMA_DECISIONS.md#intervention](CONFIG_SCHEMA_DECISIONS.md#intervention)
 - rollout에서 gate가 호출되는 위치: [PIPELINE.md#unified-train-loop](PIPELINE.md#unified-train-loop)
@@ -73,8 +88,9 @@ schema로 변환해야 한다. 이 작업은 offline demo prefill과 DAgger/BC t
 
 ### 3. Online rollout smoke를 실제 Robomimic env에서 검증
 
-restored learner/expert와 gate를 실제 Square env에 붙여 100 step 정도를 돌리고, replay에 의도한
-metadata가 모두 저장되는지 확인한다.
+restored learner/expert와 gate를 실제 Square env에 붙인 100-step smoke는 DAgger relabel과 expert-Q gap 둘 다 통과했다. 결과와 재실행 명령은 [REAL_ENV_SMOKE_TESTS.md](REAL_ENV_SMOKE_TESTS.md)를 본다.
+
+남은 것은 real-env 산출물 replay save/load round-trip, DAgger update-on smoke, video/action sync 검증이다.
 
 - 초기 intervention pipeline: [PIPELINE.md#초기-파이프라인](PIPELINE.md#초기-파이프라인)
 - step 단위 로직: [PIPELINE.md#step-logic](PIPELINE.md#step-logic)

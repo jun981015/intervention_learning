@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Collect failed policy rollouts and render videos with action/state traces."""
+"""Collect policy rollouts and render videos with action/state traces."""
 
 import argparse
 import json
@@ -219,8 +219,19 @@ def save_episode_data(episode: dict, path: Path, *, seed: int, attempt: int, cam
     )
 
 
+def should_save_episode(success: bool, episode_filter: str) -> bool:
+    """Return whether an episode should be saved under the requested filter."""
+    if episode_filter == "all":
+        return True
+    if episode_filter == "failure":
+        return not success
+    if episode_filter == "success":
+        return success
+    raise ValueError(f"Unsupported episode filter: {episode_filter}")
+
+
 def main() -> None:
-    """Collect failed episodes and write videos/data files."""
+    """Collect selected episodes and write videos/data files."""
     args = parse_args()
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -237,17 +248,18 @@ def main() -> None:
         render_hw=(args.render_size, args.render_size),
     )
 
-    failures = []
+    saved_episodes = []
     summary = {
         "policy_dir": str(policy_dir),
         "env_name": args.env_name,
         "camera": args.camera,
         "seed": args.seed,
-        "target_failures": args.num_failures,
+        "episode_filter": args.episode_filter,
+        "target_episodes": args.num_episodes,
         "attempts": [],
     }
     attempt = 0
-    while len(failures) < args.num_failures and attempt < args.max_attempts:
+    while len(saved_episodes) < args.num_episodes and attempt < args.max_attempts:
         episode_seed = args.seed + attempt
         episode = collect_episode(
             agent,
@@ -271,9 +283,10 @@ def main() -> None:
             f"success={int(success)} length={len(episode['actions'])}",
             flush=True,
         )
-        if not success:
-            failure_idx = len(failures)
-            stem = f"failure_{failure_idx:02d}_seed{episode_seed}"
+        if should_save_episode(success, args.episode_filter):
+            episode_idx = len(saved_episodes)
+            outcome = "success" if success else "failure"
+            stem = f"episode_{episode_idx:02d}_{outcome}_seed{episode_seed}"
             video_path = output_dir / f"{stem}.mp4"
             data_path = output_dir / f"{stem}.npz"
             write_composite_video(
@@ -290,19 +303,26 @@ def main() -> None:
                 attempt=attempt,
                 camera=args.camera,
             )
-            failures.append({"video": str(video_path), "data": str(data_path), "seed": episode_seed})
+            saved_episodes.append(
+                {
+                    "video": str(video_path),
+                    "data": str(data_path),
+                    "seed": episode_seed,
+                    "success": success,
+                }
+            )
             print(f"[save] {video_path} {data_path}", flush=True)
         attempt += 1
 
-    summary["failures"] = failures
-    summary["num_failures"] = len(failures)
+    summary["episodes"] = saved_episodes
+    summary["num_episodes"] = len(saved_episodes)
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
-    if len(failures) < args.num_failures:
+    if len(saved_episodes) < args.num_episodes:
         raise RuntimeError(
-            f"Collected only {len(failures)} failures after {args.max_attempts} attempts. "
+            f"Collected only {len(saved_episodes)} episodes after {args.max_attempts} attempts. "
             f"See {output_dir / 'summary.json'}."
         )
-    print(f"saved {len(failures)} failure episodes to {output_dir}", flush=True)
+    print(f"saved {len(saved_episodes)} episodes to {output_dir}", flush=True)
 
 
 def parse_args():
@@ -311,6 +331,8 @@ def parse_args():
     parser.add_argument("--env-name", default="square-mh-low_dim")
     parser.add_argument("--policy-dir", default=str(DEFAULT_POLICY_DIR))
     parser.add_argument("--output-dir", default="videos/failure_rollouts/bcflow_square_actorln_seed0_1m")
+    parser.add_argument("--episode-filter", choices=("all", "failure", "success"), default="failure")
+    parser.add_argument("--num-episodes", type=int, default=None)
     parser.add_argument("--num-failures", type=int, default=10)
     parser.add_argument("--max-attempts", type=int, default=80)
     parser.add_argument("--seed", type=int, default=0)
@@ -319,7 +341,10 @@ def parse_args():
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--video-skip", type=int, default=2)
     parser.add_argument("--state-plot-mode", choices=("zscore", "raw"), default="zscore")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.num_episodes is None:
+        args.num_episodes = args.num_failures
+    return args
 
 
 if __name__ == "__main__":

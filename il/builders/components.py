@@ -7,7 +7,13 @@ from typing import Any
 import numpy as np
 from gymnasium import spaces
 
-from il.buffers import ReplayBuffer, ReplayBufferCollection, load_npz_dataset, make_replay_example
+from il.buffers import (
+    ReplayBuffer,
+    ReplayBufferCollection,
+    load_npz_dataset,
+    load_robomimic_lowdim_replay_dataset,
+    make_replay_example,
+)
 from il.builders.types import EnvSpec
 from il.gating import ExpertQGapGate, RandomGate
 
@@ -124,12 +130,22 @@ def build_buffers(config: dict[str, Any], *, env_spec: EnvSpec) -> ReplayBufferC
         if isinstance(spec, str):
             spec = {"path": spec}
         fmt = spec.get("format", "npz")
-        if fmt != "npz":
+        if fmt == "npz":
+            dataset = load_npz_dataset(
+                spec["path"],
+                max_transitions=spec.get("max_transitions"),
+            )
+        elif fmt in {"robomimic", "robomimic_lowdim", "robomimic_hdf5"}:
+            env_cfg = config.get("env", {})
+            dataset = load_robomimic_lowdim_replay_dataset(
+                spec["path"],
+                max_demos=spec.get("max_demos"),
+                max_transitions=spec.get("max_transitions"),
+                reward_scale=float(spec.get("reward_scale", env_cfg.get("reward_scale", 1.0))),
+                reward_shift=float(spec.get("reward_shift", env_cfg.get("reward_shift", 0.0))),
+            )
+        else:
             raise ValueError(f"Unsupported replay prefill format for {name}: {fmt!r}")
-        dataset = load_npz_dataset(
-            spec["path"],
-            max_transitions=spec.get("max_transitions"),
-        )
         return ReplayBuffer.create_from_initial_dataset(dataset, size, frame_stack=frame_stack)
 
     return ReplayBufferCollection(
