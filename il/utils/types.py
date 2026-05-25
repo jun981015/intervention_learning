@@ -62,6 +62,9 @@ class StepRecord:
     episode_id: int = -1
     episode_step: int = -1
     env_info: dict[str, Any] = field(default_factory=dict)
+    base_action: np.ndarray | None = None
+    residual_action: np.ndarray | None = None
+    next_base_action: np.ndarray | None = None
 
     @property
     def done(self) -> bool:

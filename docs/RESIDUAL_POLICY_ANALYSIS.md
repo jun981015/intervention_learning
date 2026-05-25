@@ -286,7 +286,74 @@ gate on: execute expert action
 
 - actor observation에 `base_action`을 concat할지, observation dict key로 둘지.
 - critic도 base action을 observation으로 볼지, 순수 `Q(s, a_exec)`만 볼지.
-- base policy가 action chunk를 낼 때 queue를 어떻게 관리할지.
+- learner/expert 일반 action chunk queue를 residual base queue와 같은 방식으로 확장할지.
 - stochastic base policy를 deterministic eval action으로 고정할지.
-- offline demo에서 base action을 미리 cache할지, training time에 계산할지.
 - action scaler를 v1부터 넣을지, Robomimic action clip으로 시작할지.
+
+## 구현 상태
+
+2026-05-24 기준 residual v0 코드 경로를 추가했다.
+
+구현된 것:
+
+- `actors.base`를 optional frozen base actor로 build한다.
+- `learner.kind: residual_rlpd`를 추가했다. 내부는 기존 RLPD agent를 쓰되 `residual_policy=True`로 동작한다.
+- rollout `execute: residual`은 `a_base = base_policy(s)`, `delta = learner(s, a_base)`, `a_exec = clip(a_base + residual_scale * delta)`를 실행한다.
+- replay transition에 `base_actions`, `residual_actions`, `next_base_actions`를 저장한다.
+- residual RLPD critic은 combined `actions`를 학습한다.
+- residual RLPD actor loss는 `Q(concat(s, a_base), clip(a_base + residual_scale * delta))`를 사용한다.
+- `a_base`와 `next_base_action`은 Q/actor target 경로에서 stop-gradient 처리한다.
+- residual evaluation path도 base + residual composition을 사용한다.
+- base policy가 `full_action_chunk`를 반환하면 rollout queue에서 primitive action을 한 step씩 pop한다.
+- replay/update spec의 `sequence_length`를 actor `horizon_length`와 분리했다. critic TD target은 실제 sampled batch sequence 길이를 사용한다.
+- prefill dataset에 `cache_base_actions: true`를 주면 frozen base policy로 `base_actions`와 `next_base_actions`를 채울 수 있다.
+- smoke test에 residual transition schema, residual RLPD update, residual BC auxiliary update, base action chunk queue, TD sequence length, base-action cache 검증을 추가했다.
+
+아직 안 된 것:
+
+- learner/expert 일반 action chunk queue와 vector env별 queue. 현재 구현된 것은 residual rollout의 frozen base policy queue다. residual actor 자체는 primitive action만 지원한다.
+- residual BC pretraining 또는 residual actor BC regularization을 실제 큰 실험 config에서 검증하는 작업. 코드 smoke는 통과하지만, 큰 robomimic dataset에서 cache/runtime 비용은 아직 따로 측정하지 않았다.
+- action scaler. 현재는 Robomimic `[-1, 1]` action clip 기준이다.
+- PER와 large Q ensemble.
+
+2026-05-25 Phase 1 결정:
+
+- ResFit 원본에서 base BC policy는 action chunk/queue를 쓴다. 하지만 residual actor는 매 step primitive residual action 하나만 낸다.
+- 우리 v0도 `residual_rlpd`는 `action_chunking=False`만 허용한다. 대신 `horizon_length`를 actor output 길이로 강제 덮어쓰지 않는다.
+- Phase 1 실험은 update spec의 `sequence_length=1`로 1-step TD만 사용한다. TD n-step 확장은 나중에 `td_n_step`/sampling sequence 쪽에서 분리해서 처리한다.
+- residual update batch는 `base_actions`와 `next_base_actions`가 finite해야 한다. raw demo prefill처럼 base policy cache가 없는 데이터가 섞이면 update 전에 fail-fast한다.
+- residual BC loss를 켤 때 auxiliary demo batch를 쓰면 `bc_base_actions`도 반드시 finite해야 한다.
+
+2026-05-25 Phase 2 결정:
+
+- base policy output에 `full_action_chunk`가 있으면 rollout state의 `base_action_queue`에 primitive action 단위로 넣고 한 step씩 pop한다.
+- current step에서 쓴 `base_action_t`와 replay target에 저장할 `next_base_action_{t+1}`이 어긋나지 않도록 `prepare_next_base_action()`이 다음 base action을 pop한 뒤 `pending_base_output`으로 보관한다. 다음 rollout step의 `sample_base_action()`은 이 pending action을 먼저 사용한다.
+- episode reset 또는 eval episode reset 때는 rollout state를 비워 base action queue가 episode boundary를 넘지 않게 한다.
+- evaluation은 training rollout queue를 보존하기 위해 임시 `rollout_state`를 사용하고 종료 후 원래 state를 복원한다.
+- 실제 square smoke는 현재 pretrained base가 `action_chunking=false`라 primitive path만 검증했다. chunk pop 순서는 simulator-free smoke에서 검증했다.
+
+2026-05-25 Phase 3 결정:
+
+- actor `horizon_length`는 action chunk output 길이로 남긴다.
+- update spec의 `sequence_length`는 replay sampling/TD backup 길이다. legacy `horizon_length` update key는 읽지만, 새 public schema는 `sequence_length`를 쓴다.
+- RLPD critic과 BC auxiliary critic의 discount exponent는 config `horizon_length`가 아니라 실제 batch `rewards.shape[-1]`에서 가져온다.
+- 이로써 `action_chunking=false, actor horizon_length=5, replay sequence_length=3` 같은 조합도 TD target을 3-step으로 계산한다.
+
+2026-05-25 Phase 4 결정:
+
+- `replay.prefill.<buffer>.cache_base_actions: true`를 명시한 경우에만 frozen `actors.base`를 prefill dataset에 돌려 residual metadata를 채운다. 큰 dataset에서 policy inference 비용이 커질 수 있으므로 자동으로 켜지 않는다.
+- cache는 rollout과 같은 base action queue helper를 사용한다. `base_actions[i]`는 current obs에서 쓸 base action이고, `next_base_actions[i]`는 다음 state에서 target actor가 사용할 action이다.
+- 캐시된 demo의 `actions`는 그대로 expert/demo action으로 유지한다. `residual_actions`는 diagnostic용으로 `actions - base_actions`를 저장한다. residual BC target은 update에서 `(bc_actions - bc_base_actions) / residual_scale`로 계산한다.
+
+검증:
+
+```bash
+python -m compileall il scripts
+conda run -n il python scripts/smoke_test.py
+```
+
+추가된 real-env smoke config:
+
+```bash
+conda run -n il python -m il.train --config config/smoke_residual_square.yaml
+```

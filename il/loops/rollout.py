@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Rollout action proposal, gating, and execution-action selection."""
 
+from collections import deque
 from typing import Any
 
 import jax
@@ -16,6 +17,15 @@ def policy_observation(observation, context: TrainContext):
     if context.env_spec.state_key is not None and isinstance(observation, dict):
         return observation[context.env_spec.state_key]
     return observation
+
+
+def residual_policy_observation(policy_obs, base_action: np.ndarray) -> np.ndarray:
+    """Concatenate low-dim state and base action for residual actors."""
+    if isinstance(policy_obs, dict):
+        raise NotImplementedError("residual rollout currently supports low-dim observations only.")
+    state = np.asarray(policy_obs, dtype=np.float32).reshape(-1)
+    base = np.asarray(base_action, dtype=np.float32).reshape(-1)
+    return np.concatenate([state, base], axis=-1).astype(np.float32)
 
 
 def _missing_policy_output(action_dim: int, *, reason: str) -> PolicyOutput:
@@ -39,6 +49,106 @@ def _sample_actor(
     if bundle is None or bundle.policy is None:
         return _missing_policy_output(action_dim, reason=reason_if_missing)
     return bundle.policy.sample_action(observation, rng=rng)
+
+
+def _rollout_state(context: TrainContext) -> dict[str, Any]:
+    """Return mutable rollout state, creating it for older contexts if needed."""
+    if not hasattr(context, "rollout_state") or context.rollout_state is None:
+        context.rollout_state = {}
+    return context.rollout_state
+
+
+def reset_rollout_state(context: TrainContext) -> None:
+    """Clear per-episode rollout caches such as action queues."""
+    _rollout_state(context).clear()
+
+
+def _base_action_queue(context: TrainContext):
+    """Return the base policy action queue used by residual rollout."""
+    state = _rollout_state(context)
+    queue = state.get("base_action_queue")
+    if queue is None:
+        queue = deque()
+        state["base_action_queue"] = queue
+    return queue
+
+
+def _enqueue_base_policy_output(context: TrainContext, output: PolicyOutput) -> None:
+    """Store a base policy chunk as primitive actions to execute one-by-one."""
+    queue = _base_action_queue(context)
+    chunk = output.info.get("full_action_chunk")
+    if chunk is None:
+        flat_action = np.asarray(output.action, dtype=np.float32).reshape(-1)
+        if flat_action.size % context.action_dim != 0:
+            raise ValueError(f"base action dim mismatch: expected multiple of {context.action_dim}, got {flat_action.size}.")
+        actions = flat_action.reshape(-1, context.action_dim)
+    else:
+        actions = np.asarray(chunk, dtype=np.float32)
+        if actions.ndim != 2:
+            raise ValueError(f"base full_action_chunk must be [horizon, action_dim], got shape {actions.shape}.")
+    if actions.shape[1] != context.action_dim:
+        raise ValueError(f"base action dim mismatch: expected {context.action_dim}, got shape {actions.shape}.")
+    if not np.isfinite(actions).all():
+        raise ValueError("residual rollout requires finite base action chunk values.")
+
+    chunk_size = int(actions.shape[0])
+    for idx, action in enumerate(actions):
+        info = {key: value for key, value in output.info.items() if key != "full_action_chunk"}
+        info.update(
+            {
+                "base_chunk_index": idx,
+                "base_chunk_size": chunk_size,
+                "base_queue_refill": int(idx == 0),
+                "base_queue_remaining_after_pop": chunk_size - idx - 1,
+            }
+        )
+        queue.append(
+            PolicyOutput(
+                action=np.asarray(action, dtype=np.float32),
+                log_prob=output.log_prob,
+                info=info,
+            )
+        )
+
+
+def _sample_or_pop_base_action(context: TrainContext, observation, *, rng) -> PolicyOutput:
+    """Return the next base action, querying the base policy only when the queue is empty."""
+    queue = _base_action_queue(context)
+    if not queue:
+        policy_obs = policy_observation(observation, context)
+        output = _sample_actor(
+            context.base,
+            policy_obs,
+            rng=rng,
+            action_dim=context.action_dim,
+            reason_if_missing="base_not_sampled",
+        )
+        _enqueue_base_policy_output(context, output)
+    output = queue.popleft()
+    if np.isnan(output.action).any():
+        raise ValueError("residual rollout requires a finite base action.")
+    return output
+
+
+def sample_base_action(context: TrainContext, observation, *, rng) -> PolicyOutput:
+    """Return the current base action for residual rollout."""
+    state = _rollout_state(context)
+    pending = state.pop("pending_base_output", None)
+    if pending is not None:
+        if np.isnan(pending.action).any():
+            raise ValueError("residual rollout requires a finite pending base action.")
+        return pending
+    return _sample_or_pop_base_action(context, observation, rng=rng)
+
+
+def prepare_next_base_action(context: TrainContext, observation, *, rng) -> PolicyOutput:
+    """Precompute the next state's base action and keep it for the next rollout step."""
+    state = _rollout_state(context)
+    if "pending_base_output" in state:
+        raise ValueError("pending base action already exists; sample it before preparing another next_base_action.")
+    output = _sample_or_pop_base_action(context, observation, rng=rng)
+    state["pending_base_output"] = output
+    return output
 
 
 def _fixed_decision(controller_id: ControllerId, *, reason: str) -> GateDecision:
@@ -132,12 +242,72 @@ def _select_executed_action(
     return np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
 
 
+def _choose_residual_action(context: TrainContext, observation, *, step: int):
+    """Sample base and residual policies, then execute their clipped sum."""
+    if context.base is None:
+        raise ValueError("rollout.execute='residual' requires a built base actor.")
+    policy_obs = policy_observation(observation, context)
+    context.rng, base_rng, residual_rng, expert_rng = jax.random.split(context.rng, 4)
+
+    base_output = sample_base_action(context, observation, rng=base_rng)
+    residual_obs = residual_policy_observation(policy_obs, base_output.action)
+    raw_residual_output = _sample_actor(
+        context.learner,
+        residual_obs,
+        rng=residual_rng,
+        action_dim=context.action_dim,
+        reason_if_missing="residual_learner_not_sampled",
+    )
+    if np.isnan(raw_residual_output.action).any():
+        raise ValueError("residual learner produced NaN action.")
+
+    residual_scale = float(context.learner.config.get("residual_scale", context.config["rollout"].get("residual_scale", 1.0)))
+    raw_residual = np.asarray(raw_residual_output.action, dtype=np.float32)
+    residual_action = raw_residual * residual_scale
+    base_action = np.asarray(base_output.action, dtype=np.float32)
+    action = np.clip(base_action + residual_action, -1.0, 1.0)
+
+    learner_output = PolicyOutput(
+        action=residual_action,
+        log_prob=raw_residual_output.log_prob,
+        info={
+            **raw_residual_output.info,
+            "base_action": base_action,
+            "raw_residual_action": raw_residual,
+            "residual_action": residual_action,
+            "residual_scale": residual_scale,
+            "base_kind": context.base.kind,
+            "base_checkpoint_path": str(context.base.checkpoint_path) if context.base.checkpoint_path else "",
+        },
+    )
+    expert_output = (
+        _sample_actor(
+            context.expert,
+            policy_obs,
+            rng=expert_rng,
+            action_dim=context.action_dim,
+            reason_if_missing="expert_not_sampled",
+        )
+        if bool(context.config["rollout"].get("sample_expert", False))
+        else _missing_policy_output(context.action_dim, reason="expert_not_sampled")
+    )
+    decision = GateDecision(
+        controller_id=ControllerId.LEARNER,
+        reason=GateReason.NONE,
+        score=0.0,
+        info={"execute": "residual", "residual_scale": residual_scale},
+    )
+    return action, learner_output, expert_output, decision
+
+
 def choose_rollout_action(context: TrainContext, observation, *, step: int):
     """Run policy proposal sampling, gate decision, and action selection."""
     rollout_cfg = context.config["rollout"]
     execute = rollout_cfg.get("execute", "learner")
-    policy_obs = policy_observation(observation, context)
+    if execute == "residual":
+        return _choose_residual_action(context, observation, step=step)
 
+    policy_obs = policy_observation(observation, context)
     learner_output, expert_output = _sample_action_proposals(
         context,
         policy_obs,

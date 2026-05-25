@@ -8,6 +8,7 @@ own gradient updates, and buffers own storage/sampling.
 
 import time
 
+import jax
 import numpy as np
 
 from il.buffers.routing import route_episode_to_buffers
@@ -15,7 +16,7 @@ from il.buffers.schema import step_record_to_transition
 from il.builders.types import TrainContext
 from il.evaluation import evaluate_policy
 from il.logger import MetricLogger
-from il.loops.rollout import choose_rollout_action, policy_observation
+from il.loops.rollout import choose_rollout_action, policy_observation, prepare_next_base_action, reset_rollout_state
 from il.loops.updates import run_update_spec
 from il.utils.flax_utils import save_agent
 from il.utils.types import ControllerId, GateDecision, StepRecord
@@ -154,6 +155,7 @@ def run_train_loop(context: TrainContext) -> TrainContext:
 
     logger = _make_logger(context)
     observation, _ = context.env.reset(options={"seed": int(context.config["run"]["seed"])})
+    reset_rollout_state(context)
     episode: list[dict] = []
     episode_return = 0.0
     episode_length = 0
@@ -179,6 +181,14 @@ def run_train_loop(context: TrainContext) -> TrainContext:
             step=step,
         )
         next_observation, reward, terminated, truncated, info = context.env.step(action)
+        base_action = None
+        residual_action = None
+        next_base_action = None
+        if context.config["rollout"].get("execute") == "residual":
+            base_action = learner_output.info.get("base_action")
+            residual_action = learner_output.info.get("residual_action", learner_output.action)
+            context.rng, next_base_rng = jax.random.split(context.rng)
+            next_base_action = prepare_next_base_action(context, next_observation, rng=next_base_rng).action
         transition = step_record_to_transition(
             StepRecord(
                 observation=observation,
@@ -193,6 +203,9 @@ def run_train_loop(context: TrainContext) -> TrainContext:
                 episode_id=episode_count,
                 episode_step=episode_length,
                 env_info=info,
+                base_action=base_action,
+                residual_action=residual_action,
+                next_base_action=next_base_action,
             )
         )
         context.buffers.online.add_transition(transition)
@@ -224,6 +237,7 @@ def run_train_loop(context: TrainContext) -> TrainContext:
             recent_lengths = recent_lengths[-100:]
             recent_successes = recent_successes[-100:]
             observation, _ = context.env.reset()
+            reset_rollout_state(context)
             episode = []
             episode_return = 0.0
             episode_length = 0
@@ -262,6 +276,9 @@ def run_train_loop(context: TrainContext) -> TrainContext:
             "gate/expert_execute_steps_total": float(expert_execute_total),
             "gate/intervention_started_total": float(intervention_started_total),
             **_rollout_health_metrics(policy_observation(observation, context), action, learner_output, expert_output),
+            **_array_health("action/base", learner_output.info.get("base_action")),
+            **_array_health("action/residual", learner_output.info.get("residual_action")),
+            **_array_health("action/raw_residual", learner_output.info.get("raw_residual_action")),
             **step_update_metrics,
         }
         if force_log:

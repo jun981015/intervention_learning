@@ -30,9 +30,14 @@ def default_agent_config(kind: str) -> dict[str, Any]:
         return _to_plain_dict(get_bc_flow_config())
     if kind == "bc_mlp":
         return _to_plain_dict(get_bc_mlp_config())
-    if kind == "rlpd":
+    if kind in {"rlpd", "residual_rlpd"}:
         cfg = _to_plain_dict(get_rlpd_config())
         cfg["target_entropy"] = None
+        if kind == "residual_rlpd":
+            cfg["agent_name"] = "residual_rlpd"
+            cfg["residual_policy"] = True
+            cfg.setdefault("residual_scale", 0.1)
+            cfg.setdefault("residual_action_l2", 0.0)
         return cfg
     raise ValueError(f"Unsupported actor kind: {kind!r}")
 
@@ -92,6 +97,11 @@ def resolve_agent_config(
     config["action_dim"] = int(env_spec.action_dim)
     if kind == "bc_flow":
         config["ob_dims"] = tuple(config.get("ob_dims") or (env_spec.obs_dim,))
+    if kind == "residual_rlpd":
+        config["residual_policy"] = True
+        config["base_obs_dim"] = int(env_spec.obs_dim)
+        if bool(config.get("action_chunking", False)):
+            raise NotImplementedError("residual_rlpd v0 supports primitive actions only; set action_chunking=False.")
     return config
 
 
@@ -106,13 +116,16 @@ def create_agent(
     """Create an un-restored trainable agent."""
     if env_spec.obs_dim is None:
         raise NotImplementedError("Image observations need an encoder-backed agent implementation.")
-    ex_observations = jnp.zeros((batch_size, env_spec.obs_dim), dtype=jnp.float32)
+    obs_dim = int(env_spec.obs_dim)
+    if kind == "residual_rlpd":
+        obs_dim += int(env_spec.action_dim)
+    ex_observations = jnp.zeros((batch_size, obs_dim), dtype=jnp.float32)
     ex_actions = jnp.zeros((batch_size, env_spec.action_dim), dtype=jnp.float32)
     if kind == "bc_flow":
         return BCFlowAgent.create(seed, ex_observations, ex_actions, config)
     if kind == "bc_mlp":
         return BCMLPAgent.create(seed, ex_observations, ex_actions, config)
-    if kind == "rlpd":
+    if kind in {"rlpd", "residual_rlpd"}:
         return ACRLPDAgent.create(seed, ex_observations, ex_actions, config)
     raise ValueError(f"Unsupported trainable actor kind: {kind!r}")
 
@@ -134,13 +147,17 @@ def build_actor_bundle(
 ) -> ActorBundle:
     """Build trainable agent and optional policy view for learner/expert."""
     kind = spec["kind"]
-    if name == "expert" and not spec.get("pretrained_path"):
-        raise ValueError("Expert requires `pretrained_path`; refusing to create a random-init expert.")
+    if name in {"expert", "base"} and not spec.get("pretrained_path"):
+        label = name.capitalize()
+        raise ValueError(f"{label} requires `pretrained_path`; refusing to create a random-init {name} actor.")
 
     pretrained_config, metadata, checkpoint_path = load_pretrained_state(spec)
     if metadata:
-        if env_spec.obs_dim is not None and int(metadata.get("obs_dim", env_spec.obs_dim)) != env_spec.obs_dim:
-            raise ValueError(f"{name} pretrained obs_dim does not match env obs_dim.")
+        expected_obs_dim = env_spec.obs_dim
+        if kind == "residual_rlpd" and expected_obs_dim is not None:
+            expected_obs_dim = int(expected_obs_dim) + int(env_spec.action_dim)
+        if expected_obs_dim is not None and int(metadata.get("obs_dim", expected_obs_dim)) != expected_obs_dim:
+            raise ValueError(f"{name} pretrained obs_dim does not match expected obs_dim.")
         if int(metadata.get("action_dim", env_spec.action_dim)) != env_spec.action_dim:
             raise ValueError(f"{name} pretrained action_dim does not match env action_dim.")
 
@@ -172,7 +189,7 @@ def build_actor_bundle(
             agent=agent,
             kind=kind,
             checkpoint_path=checkpoint_path,
-            obs_dim=int(env_spec.obs_dim),
+            obs_dim=int(env_spec.obs_dim) + (env_spec.action_dim if kind == "residual_rlpd" else 0),
             action_dim=env_spec.action_dim,
             horizon_length=int(config["horizon_length"]),
             action_chunking=bool(config.get("action_chunking", False)),

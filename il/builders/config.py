@@ -55,6 +55,7 @@ DEFAULT_RECIPE: dict[str, Any] = {
             "target_action_key": "expert_actions",
         },
     },
+    "base": None,
     "expert": {
         "kind": "rlpd",
         "train": False,
@@ -181,7 +182,7 @@ def _new_actor_to_legacy(actor: dict[str, Any]) -> dict[str, Any]:
 
 def _first_sampling_spec(sampling: dict[str, Any], *, learner_kind: str | None = None) -> tuple[str, dict[str, Any]]:
     """Return the primary named sampling spec used by the current v0 train loop."""
-    if learner_kind in {"rlpd", "acrlpd", "sac"} and "rl" in sampling:
+    if learner_kind in {"rlpd", "residual_rlpd", "acrlpd", "sac"} and "rl" in sampling:
         return "rl", sampling["rl"]
     if "bc" in sampling:
         return "bc", sampling["bc"]
@@ -260,6 +261,8 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
     }
 
     recipe["learner"] = _new_actor_to_legacy(actors["learner"])
+    base = actors.get("base")
+    recipe["base"] = _new_actor_to_legacy(base) if base is not None else None
     expert = actors.get("expert")
     recipe["expert"] = _new_actor_to_legacy(expert) if expert is not None else None
 
@@ -271,7 +274,10 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
         "execute": "learner",
         "expert_query": expert_query,
         "action_mode": training.get("action_mode", "first_action"),
+        "action_composition": training.get("action_composition", "direct"),
     }
+    if training.get("action_composition") == "residual":
+        recipe["rollout"]["execute"] = "residual"
     if intervention_enabled:
         recipe["rollout"]["execute"] = "gate"
         recipe["rollout"]["sample_expert"] = expert_query == "always"
@@ -305,7 +311,7 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
         "target": "learner",
         "source": source,
         "batch_size": batch_size,
-        "horizon_length": int(sampling.get("sequence_length", recipe["learner"]["config"].get("horizon_length", 1))),
+        "sequence_length": int(sampling.get("sequence_length", recipe["learner"]["config"].get("td_n_step", 1))),
     }
     target_action_key = recipe["learner"]["config"].get("target_action_key")
     if target_action_key is not None:
@@ -318,7 +324,7 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
         bc_spec = {
             "source": bc_source,
             "batch_size": int(bc_sampling.get("batch_size", batch_size)),
-            "horizon_length": int(bc_sampling.get("sequence_length", 1)),
+            "sequence_length": int(bc_sampling.get("sequence_length", 1)),
         }
         if bc_sampling_fractions is not None:
             bc_spec["sampling_fractions"] = bc_sampling_fractions
@@ -374,6 +380,11 @@ def write_resolved_config(config: dict[str, Any], context: TrainContext) -> None
         "learner_checkpoint": str(context.learner.checkpoint_path)
         if context.learner.checkpoint_path
         else None,
+        "base_checkpoint": (
+            str(context.base.checkpoint_path)
+            if context.base is not None and context.base.checkpoint_path is not None
+            else None
+        ),
         "expert_checkpoint": (
             str(context.expert.checkpoint_path)
             if context.expert is not None and context.expert.checkpoint_path is not None

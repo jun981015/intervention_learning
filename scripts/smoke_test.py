@@ -5,6 +5,7 @@ import json
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -18,12 +19,14 @@ from il.buffers.mixed import MixedReplaySampler, MixedSamplingSpec, ReplayBuffer
 from il.buffers.replay_buffer import ReplayBuffer
 from il.buffers.routing import route_episode_to_buffers
 from il.buffers.schema import make_replay_example, step_record_to_transition
-from il.builders.components import build_buffers, infer_env_spec
+from il.builders.components import _cache_residual_base_actions, build_buffers, infer_env_spec
 from il.builders.config import new_schema_to_legacy_recipe
 from il.gating.expert_q_gap import ExpertQGapGate
 from il.gating.random_gate import RandomGate
 from il.envs.robomimic_lowdim import RobomimicLowdimWrapper
 from il.logger import MetricLogger
+from il.loops.rollout import prepare_next_base_action, reset_rollout_state, sample_base_action
+from il.loops.updates import _assert_residual_metadata
 from il.policies.bc_flow import BCFlowPolicy
 from il.policies.rlpd import RLPDPolicy
 from il.utils.config import TrainingConfig
@@ -124,6 +127,69 @@ def choose_smoke_action(
     )
     action = expert_output.action if decision.use_expert else learner_output.action
     return np.asarray(action, dtype=np.float32), learner_output, expert_output, decision
+
+
+class ChunkPolicy:
+    """Policy stub that emits an action chunk once and then relies on rollout queueing."""
+
+    def __init__(self, chunk: np.ndarray, *, use_info_chunk: bool = True):
+        self.chunk = np.asarray(chunk, dtype=np.float32)
+        self.use_info_chunk = use_info_chunk
+        self.calls = 0
+
+    def sample_action(self, observation: np.ndarray, *, rng) -> PolicyOutput:
+        del observation, rng
+        self.calls += 1
+        if self.use_info_chunk:
+            return PolicyOutput(
+                action=self.chunk[0].copy(),
+                log_prob=0.0,
+                info={"full_action_chunk": self.chunk.copy()},
+            )
+        return PolicyOutput(action=self.chunk.reshape(-1).copy(), log_prob=0.0)
+
+
+def smoke_base_action_chunk_queue() -> None:
+    """Check ResFit-style base action chunks are popped one primitive action at a time."""
+    chunk = np.asarray([[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]], dtype=np.float32)
+    policy = ChunkPolicy(chunk)
+    context = SimpleNamespace(
+        base=SimpleNamespace(policy=policy),
+        action_dim=2,
+        env_spec=SimpleNamespace(state_key=None),
+        rollout_state={},
+    )
+    observation = np.zeros(5, dtype=np.float32)
+
+    first = sample_base_action(context, observation, rng=None)
+    second_for_target = prepare_next_base_action(context, observation, rng=None)
+    second_for_rollout = sample_base_action(context, observation, rng=None)
+    third = sample_base_action(context, observation, rng=None)
+
+    assert policy.calls == 1
+    assert np.allclose(first.action, chunk[0])
+    assert np.allclose(second_for_target.action, chunk[1])
+    assert np.allclose(second_for_rollout.action, chunk[1])
+    assert np.allclose(third.action, chunk[2])
+    assert first.info["base_chunk_index"] == 0
+    assert second_for_target.info["base_chunk_index"] == 1
+    assert third.info["base_chunk_index"] == 2
+
+    reset_rollout_state(context)
+    first_after_reset = sample_base_action(context, observation, rng=None)
+    assert policy.calls == 2
+    assert np.allclose(first_after_reset.action, chunk[0])
+
+    flat_policy = ChunkPolicy(chunk, use_info_chunk=False)
+    flat_context = SimpleNamespace(
+        base=SimpleNamespace(policy=flat_policy),
+        action_dim=2,
+        env_spec=SimpleNamespace(state_key=None),
+        rollout_state={},
+    )
+    assert np.allclose(sample_base_action(flat_context, observation, rng=None).action, chunk[0])
+    assert np.allclose(sample_base_action(flat_context, observation, rng=None).action, chunk[1])
+    assert flat_policy.calls == 1
 
 
 def smoke_gate_and_replay() -> None:
@@ -412,6 +478,27 @@ def smoke_mixed_replay_sampling() -> None:
     assert update_batch["actions"].shape == (2, 4, 1, 2)
 
 
+def smoke_residual_base_action_cache() -> None:
+    """Check offline prefill can cache base and next-base actions for residual RL."""
+    chunk = np.asarray([[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]], dtype=np.float32)
+    policy = ChunkPolicy(chunk)
+    base_actor = SimpleNamespace(policy=policy)
+    env_spec = SimpleNamespace(obs_dim=5, action_dim=2, state_key=None)
+    dataset = {
+        "observations": np.zeros((3, 5), dtype=np.float32),
+        "next_observations": np.ones((3, 5), dtype=np.float32),
+        "actions": np.full((3, 2), 0.5, dtype=np.float32),
+        "episode_ids": np.zeros(3, dtype=np.int64),
+    }
+
+    cached = _cache_residual_base_actions(dataset, base_actor=base_actor, env_spec=env_spec, seed=0)
+
+    assert np.allclose(cached["base_actions"], chunk)
+    assert np.allclose(cached["next_base_actions"][:2], chunk[1:])
+    assert np.allclose(cached["residual_actions"], cached["actions"] - cached["base_actions"])
+    assert policy.calls == 2
+
+
 def smoke_replay_prefill() -> None:
     """Check optional initial replay prefill, including image side storage."""
 
@@ -519,6 +606,166 @@ def smoke_rlpd(obs_dim: int, action_dim: int) -> None:
     assert action.shape == (1, action_dim)
     assert log_prob.shape == (1,)
     assert np.isfinite(float(info["critic/critic_loss"]))
+
+
+def smoke_rlpd_td_sequence_length(obs_dim: int, action_dim: int) -> None:
+    """Check TD backup length comes from sampled replay sequence, not actor horizon."""
+    config = get_rlpd_config()
+    config.horizon_length = 5
+    config.action_chunking = False
+    config.actor_hidden_dims = (32, 32)
+    config.value_hidden_dims = (32, 32)
+    config.batch_size = 4
+    config.num_qs = 2
+    config.target_q_agg = "min"
+    config.grad_clip_norm = None
+
+    ex_observations = jnp.zeros((config.batch_size, obs_dim), dtype=jnp.float32)
+    ex_actions = jnp.zeros((config.batch_size, action_dim), dtype=jnp.float32)
+    agent = ACRLPDAgent.create(5, ex_observations, ex_actions, config)
+    batch = make_update_batch(config.batch_size, obs_dim, action_dim, horizon=3)
+    agent, info = agent.update(batch)
+
+    assert np.isfinite(float(info["critic/critic_loss"]))
+    assert float(info["critic/td_n_step"]) == 3.0
+
+
+def smoke_residual_transition_schema(obs_dim: int, action_dim: int) -> None:
+    """Check residual rollout metadata is stored in canonical replay keys."""
+    observation = np.zeros(obs_dim, dtype=np.float32)
+    next_observation = np.ones(obs_dim, dtype=np.float32)
+    base_action = np.full(action_dim, 0.2, dtype=np.float32)
+    residual_action = np.full(action_dim, -0.05, dtype=np.float32)
+    next_base_action = np.full(action_dim, 0.1, dtype=np.float32)
+    action = np.clip(base_action + residual_action, -1.0, 1.0)
+    record = StepRecord(
+        observation=observation,
+        learner=PolicyOutput(action=residual_action),
+        expert=PolicyOutput(action=np.full(action_dim, np.nan, dtype=np.float32)),
+        decision=RandomGate(expert_probability=0.0).decide(
+            step=0,
+            observation=observation,
+            learner=PolicyOutput(action=residual_action),
+            expert=PolicyOutput(action=np.full(action_dim, np.nan, dtype=np.float32)),
+            rng=np.random.default_rng(0),
+        ),
+        action=action,
+        reward=0.0,
+        terminated=False,
+        truncated=False,
+        next_observation=next_observation,
+        base_action=base_action,
+        residual_action=residual_action,
+        next_base_action=next_base_action,
+    )
+    transition = step_record_to_transition(record)
+    assert np.allclose(transition["actions"], action)
+    assert np.allclose(transition["base_actions"], base_action)
+    assert np.allclose(transition["residual_actions"], residual_action)
+    assert np.allclose(transition["next_base_actions"], next_base_action)
+
+
+def smoke_residual_rlpd(obs_dim: int, action_dim: int) -> None:
+    """Check residual RLPD updates with base-action augmented observations."""
+    config = get_rlpd_config()
+    config.horizon_length = 1
+    config.action_chunking = False
+    config.actor_hidden_dims = (32, 32)
+    config.value_hidden_dims = (32, 32)
+    config.batch_size = 4
+    config.num_qs = 2
+    config.target_q_agg = "min"
+    config.grad_clip_norm = None
+    config.residual_policy = True
+    config.residual_scale = 0.1
+    config.residual_action_l2 = 0.01
+    config.base_obs_dim = obs_dim
+    config.bc_alpha = 0.0
+
+    ex_observations = jnp.zeros((config.batch_size, obs_dim + action_dim), dtype=jnp.float32)
+    ex_actions = jnp.zeros((config.batch_size, action_dim), dtype=jnp.float32)
+    agent = ACRLPDAgent.create(10, ex_observations, ex_actions, config)
+    batch = make_update_batch(config.batch_size, obs_dim, action_dim, config.horizon_length)
+    batch["base_actions"] = np.full((config.batch_size, config.horizon_length, action_dim), 0.2, dtype=np.float32)
+    batch["next_base_actions"] = np.full((config.batch_size, config.horizon_length, action_dim), 0.1, dtype=np.float32)
+    agent, info = agent.update(batch)
+
+    residual_obs = jnp.zeros((1, obs_dim + action_dim), dtype=jnp.float32)
+    action, log_prob = agent.sample_actions_with_log_prob(residual_obs, rng=jax.random.PRNGKey(11))
+    assert action.shape == (1, action_dim)
+    assert log_prob.shape == (1,)
+    assert np.isfinite(float(info["critic/critic_loss"]))
+    assert np.isfinite(float(info["actor/residual_l2"]))
+
+
+def smoke_residual_rlpd_with_bc_aux(obs_dim: int, action_dim: int) -> None:
+    """Check residual BC regularization can train against cached demo base actions."""
+    config = get_rlpd_config()
+    config.horizon_length = 1
+    config.action_chunking = False
+    config.actor_hidden_dims = (32, 32)
+    config.value_hidden_dims = (32, 32)
+    config.batch_size = 4
+    config.num_qs = 2
+    config.target_q_agg = "min"
+    config.grad_clip_norm = None
+    config.residual_policy = True
+    config.residual_scale = 1.0
+    config.residual_action_l2 = 0.0
+    config.base_obs_dim = obs_dim
+    config.bc_alpha = 0.1
+
+    ex_observations = jnp.zeros((config.batch_size, obs_dim + action_dim), dtype=jnp.float32)
+    ex_actions = jnp.zeros((config.batch_size, action_dim), dtype=jnp.float32)
+    agent = ACRLPDAgent.create(12, ex_observations, ex_actions, config)
+
+    batch = make_update_batch(config.batch_size, obs_dim, action_dim, config.horizon_length)
+    batch["base_actions"] = np.full((config.batch_size, config.horizon_length, action_dim), 0.2, dtype=np.float32)
+    batch["next_base_actions"] = np.full((config.batch_size, config.horizon_length, action_dim), 0.1, dtype=np.float32)
+    batch["bc_observations"] = np.zeros((config.batch_size, obs_dim), dtype=np.float32)
+    batch["bc_actions"] = np.full((config.batch_size, 1, action_dim), 0.5, dtype=np.float32)
+    batch["bc_base_actions"] = np.full((config.batch_size, 1, action_dim), 0.2, dtype=np.float32)
+
+    agent, info = agent.update(batch)
+
+    assert np.isfinite(float(info["critic/critic_loss"]))
+    assert np.isfinite(float(info["actor/bc_loss"]))
+    assert float(info["actor/bc_loss"]) != 0.0
+
+
+def smoke_residual_metadata_validation(obs_dim: int, action_dim: int) -> None:
+    """Check residual updates fail fast when base-action metadata is missing."""
+
+    @dataclass
+    class Target:
+        name: str
+        config: dict
+
+    batch = make_update_batch(batch_size=4, obs_dim=obs_dim, action_dim=action_dim, horizon=1)
+    batch["base_actions"] = np.full((4, 1, action_dim), 0.2, dtype=np.float32)
+    batch["next_base_actions"] = np.full((4, 1, action_dim), 0.1, dtype=np.float32)
+    target = Target(name="residual", config={"residual_policy": True, "bc_alpha": 0.0})
+    _assert_residual_metadata(target, {"name": "residual"}, batch)
+
+    bad_batch = dict(batch)
+    bad_batch["base_actions"] = np.array(batch["base_actions"], copy=True)
+    bad_batch["base_actions"][0, 0, 0] = np.nan
+    try:
+        _assert_residual_metadata(target, {"name": "residual"}, bad_batch)
+    except ValueError as exc:
+        assert "base_actions" in str(exc)
+    else:
+        raise AssertionError("NaN residual base_actions should fail before JAX update.")
+
+    bc_batch = dict(batch)
+    bc_batch["bc_actions"] = np.array(batch["actions"], copy=True)
+    bc_target = Target(name="residual_bc", config={"residual_policy": True, "bc_alpha": 0.1})
+    try:
+        _assert_residual_metadata(bc_target, {"name": "residual_bc"}, bc_batch)
+    except KeyError as exc:
+        assert "bc_base_actions" in str(exc)
+    else:
+        raise AssertionError("Auxiliary residual BC batch without bc_base_actions should fail.")
 
 
 def smoke_rlpd_policy_checkpoint(obs_dim: int, action_dim: int) -> None:
@@ -729,6 +976,28 @@ def smoke_bc_flow_chunk_valid_handling(obs_dim: int, action_dim: int) -> None:
         raise AssertionError("chunked BCFlow should reject primitive single-step targets for horizon > 1")
 
 
+def smoke_config_sequence_length_semantics() -> None:
+    """Check public replay sampling sequence length does not overwrite actor chunk horizon."""
+    recipe = new_schema_to_legacy_recipe(
+        {
+            "experiment": {"name": "smoke", "seed": 0},
+            "env": {"kind": "robomimic", "name": "square-mh-low_dim"},
+            "actors": {
+                "learner": {
+                    "kind": "bc_flow",
+                    "network": {"horizon_length": 5, "action_chunking": True},
+                },
+            },
+            "training": {"total_steps": 1},
+            "replay": {"sampling": {"bc": {"source": "online", "sequence_length": 1}}},
+            "intervention": {"enabled": False, "gate": {"kind": "always_off"}},
+        }
+    )
+    assert recipe["learner"]["config"]["horizon_length"] == 5
+    assert recipe["updates"][0]["sequence_length"] == 1
+    assert "horizon_length" not in recipe["updates"][0]
+
+
 def smoke_expert_query_semantics() -> None:
     """Check intervention configs query expert proposals by default."""
 
@@ -892,6 +1161,10 @@ def main() -> None:
     print("reward transform smoke ok")
     smoke_gate_and_replay()
     print("gate/replay smoke ok")
+    smoke_base_action_chunk_queue()
+    print("base action chunk queue smoke ok")
+    smoke_config_sequence_length_semantics()
+    print("config sequence length semantics smoke ok")
     smoke_expert_query_semantics()
     print("expert query semantics smoke ok")
     smoke_expert_q_gap_nonfinite_fails()
@@ -906,8 +1179,20 @@ def main() -> None:
     print("mixed replay sampling smoke ok")
     smoke_replay_prefill()
     print("replay prefill smoke ok")
+    smoke_residual_base_action_cache()
+    print("residual base action cache smoke ok")
     smoke_rlpd(args.obs_dim, args.action_dim)
     print("rlpd smoke ok")
+    smoke_rlpd_td_sequence_length(args.obs_dim, args.action_dim)
+    print("rlpd td sequence length smoke ok")
+    smoke_residual_transition_schema(args.obs_dim, args.action_dim)
+    print("residual transition schema smoke ok")
+    smoke_residual_rlpd(args.obs_dim, args.action_dim)
+    print("residual rlpd smoke ok")
+    smoke_residual_rlpd_with_bc_aux(args.obs_dim, args.action_dim)
+    print("residual rlpd bc aux smoke ok")
+    smoke_residual_metadata_validation(args.obs_dim, args.action_dim)
+    print("residual metadata validation smoke ok")
     smoke_rlpd_policy_checkpoint(args.obs_dim, args.action_dim)
     print("rlpd policy checkpoint smoke ok")
     smoke_bc_mlp(args.obs_dim, args.action_dim)

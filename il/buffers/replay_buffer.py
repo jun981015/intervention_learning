@@ -189,6 +189,12 @@ def load_npz_dataset(path: str | Path, *, max_transitions: int | None = None) ->
         dataset = _tree_slice(dataset, int(max_transitions))
     if "observations" not in dataset or "actions" not in dataset:
         raise ValueError(f"NPZ replay dataset is missing required keys: {path}")
+
+    # Keep old replay files compatible after residual-action metadata was added.
+    actions = np.asarray(dataset["actions"])
+    for key in ("base_actions", "residual_actions", "next_base_actions"):
+        if key not in dataset:
+            dataset[key] = np.full_like(actions, np.nan, dtype=np.float32)
     return dataset
 
 

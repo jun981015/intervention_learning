@@ -82,10 +82,11 @@ target = r_t + gamma r_{t+1} + ... + gamma^{n-1} r_{t+n-1}
        + gamma^n * mask_chain * Q_target(s_{t+n}, a_{t+n})
 ```
 
-v0에서는 `horizon_length=1`로 시작하지만, buffer API는 처음부터 n-step을 받을 수 있게 둔다.
-action chunking은 나중에 다루더라도 n-step backup 자체는 유지한다.
+Buffer API는 처음부터 n-step을 받을 수 있게 둔다. action chunking과 TD n-step은 별도 개념이다.
 
-TODO: BC action chunk horizon과 RL n-step backup horizon은 같은 개념이 아니다. 현재 config에서는 `horizon_length`가 두 역할을 같이 맡을 수 있어서, 이후에는 `bc_chunk_horizon`과 `td_n_step` 또는 sampling spec별 `sequence_length`로 분리한다. chunked BC는 `[B, chunk_horizon, action_dim]` target이 필요하고, RL critic은 `[B, td_n_step]` reward/mask/next observation sequence가 필요하다.
+현재 public config에서는 replay sampling spec의 `sequence_length`가 TD backup 길이다. actor config의 `horizon_length`는 action chunk output 길이로 남긴다. update spec에 legacy `horizon_length` key가 있으면 아직 읽지만, 새 config는 `sequence_length`를 써야 한다. RLPD critic과 BC auxiliary critic은 실제 sampled batch의 `rewards.shape[-1]`를 TD exponent로 사용한다.
+
+예시: BCFlow actor는 `horizon_length=5, action_chunking=true`로 5-step action chunk를 학습하면서, critic update는 `sequence_length=1` 또는 `sequence_length=3`으로 독립 설정할 수 있다.
 
 ## Episode Boundary 처리
 
@@ -195,11 +196,14 @@ replay:
       path: /path/to/demo_replay.npz
       format: npz
       max_transitions: 100000  # optional
+      cache_base_actions: true     # optional, residual RL only; requires actors.base
 ```
 
 `prefill`은 `online`, `intervention`, `demo` 중 원하는 buffer에 걸 수 있다. 물리 buffer는 계속
 분리되어 있고, prefill은 해당 buffer의 초기 `size/pointer`만 채운다.
 간단한 경우 `demo: /path/to/demo_replay.npz`처럼 path string만 넣어도 된다.
+
+Residual RL에서 `cache_base_actions: true`를 켜면 builder가 frozen `actors.base` policy를 prefill dataset의 observation에 돌려 `base_actions`, `next_base_actions`, diagnostic `residual_actions`를 채운다. 이 옵션은 policy inference를 dataset 전체에 수행하므로 명시적으로만 켠다.
 
 
 High-priority TODO: dataset adapter / canonicalization interface가 필요하다. offline demo dataset은 source마다

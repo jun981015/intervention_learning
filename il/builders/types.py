@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Dataclasses shared by training builders."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +56,7 @@ class TrainContext:
     env: Any
     eval_env: Any | None
     learner: ActorBundle
+    base: ActorBundle | None
     expert: ActorBundle | None
     buffers: Any
     gate: Any | None
@@ -65,3 +66,4 @@ class TrainContext:
     env_spec: EnvSpec
     obs_dim: int | None
     action_dim: int
+    rollout_state: dict[str, Any] = field(default_factory=dict)

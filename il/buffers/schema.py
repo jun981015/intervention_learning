@@ -27,11 +27,29 @@ def step_record_to_transition(record: StepRecord) -> dict:
     still bootstrap from `next_observations` when the learner uses it.
     """
     controller_id = int(record.decision.controller_id)
+    base_action = (
+        np.asarray(record.base_action, dtype=np.float32)
+        if record.base_action is not None
+        else nan_like_action(record.action)
+    )
+    residual_action = (
+        np.asarray(record.residual_action, dtype=np.float32)
+        if record.residual_action is not None
+        else nan_like_action(record.action)
+    )
+    next_base_action = (
+        np.asarray(record.next_base_action, dtype=np.float32)
+        if record.next_base_action is not None
+        else nan_like_action(record.action)
+    )
     return {
         "observations": tree_asarray(record.observation),
         "actions": np.asarray(record.action, dtype=np.float32),
         "learner_actions": np.asarray(record.learner.action, dtype=np.float32),
         "expert_actions": np.asarray(record.expert.action, dtype=np.float32),
+        "base_actions": base_action,
+        "residual_actions": residual_action,
+        "next_base_actions": next_base_action,
         "rewards": np.asarray(record.reward, dtype=np.float32),
         "terminals": np.asarray(float(record.done), dtype=np.float32),
         "masks": np.asarray(1.0 - float(record.terminated), dtype=np.float32),
@@ -58,6 +76,9 @@ def make_replay_example(observation: np.ndarray, action: np.ndarray) -> dict:
         "actions": action,
         "learner_actions": action.copy(),
         "expert_actions": action.copy(),
+        "base_actions": np.full_like(action, np.nan, dtype=np.float32),
+        "residual_actions": np.full_like(action, np.nan, dtype=np.float32),
+        "next_base_actions": np.full_like(action, np.nan, dtype=np.float32),
         "rewards": np.asarray(0.0, dtype=np.float32),
         "terminals": np.asarray(0.0, dtype=np.float32),
         "masks": np.asarray(1.0, dtype=np.float32),

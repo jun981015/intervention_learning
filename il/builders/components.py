@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Small builders for env, replay buffers, and gates."""
 
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -14,8 +15,9 @@ from il.buffers import (
     load_robomimic_lowdim_replay_dataset,
     make_replay_example,
 )
-from il.builders.types import EnvSpec
+from il.builders.types import ActorBundle, EnvSpec
 from il.gating import ExpertQGapGate, RandomGate
+from il.loops.rollout import prepare_next_base_action, reset_rollout_state, sample_base_action
 
 
 def _flat_box_dim(space: spaces.Space, *, name: str) -> int:
@@ -112,7 +114,59 @@ def build_envs(config: dict[str, Any]):
     return env, eval_env
 
 
-def build_buffers(config: dict[str, Any], *, env_spec: EnvSpec) -> ReplayBufferCollection:
+def _cache_residual_base_actions(dataset: dict[str, Any], *, base_actor: ActorBundle | None, env_spec: EnvSpec, seed: int) -> dict[str, Any]:
+    """Fill residual base-action metadata for an offline/demo dataset."""
+    if base_actor is None or base_actor.policy is None:
+        raise ValueError("cache_base_actions=True requires a built actors.base policy.")
+    if env_spec.obs_dim is None:
+        raise NotImplementedError("cache_base_actions currently supports low-dim observations only.")
+
+    import jax
+
+    actions = np.asarray(dataset["actions"], dtype=np.float32)
+    observations = dataset["observations"]
+    next_observations = dataset["next_observations"]
+    episode_ids = np.asarray(dataset.get("episode_ids", np.zeros(actions.shape[0], dtype=np.int64))).reshape(-1)
+
+    context = SimpleNamespace(
+        base=base_actor,
+        action_dim=int(env_spec.action_dim),
+        env_spec=env_spec,
+        rollout_state={},
+    )
+    base_actions = np.zeros_like(actions, dtype=np.float32)
+    next_base_actions = np.zeros_like(actions, dtype=np.float32)
+    rng = jax.random.PRNGKey(int(seed))
+    previous_episode_id = None
+    for index in range(actions.shape[0]):
+        episode_id = int(episode_ids[index])
+        if previous_episode_id is None or episode_id != previous_episode_id:
+            reset_rollout_state(context)
+        previous_episode_id = episode_id
+
+        rng, base_rng, next_base_rng = jax.random.split(rng, 3)
+        base_actions[index] = sample_base_action(context, _tree_index_one(observations, index), rng=base_rng).action
+        next_base_actions[index] = prepare_next_base_action(
+            context,
+            _tree_index_one(next_observations, index),
+            rng=next_base_rng,
+        ).action
+
+    dataset = dict(dataset)
+    dataset["base_actions"] = base_actions
+    dataset["next_base_actions"] = next_base_actions
+    dataset["residual_actions"] = actions - base_actions
+    return dataset
+
+
+def _tree_index_one(value, index: int):
+    """Return one item from an array tree without importing replay internals."""
+    if isinstance(value, dict):
+        return {key: _tree_index_one(item, index) for key, item in value.items()}
+    return np.asarray(value[index])
+
+
+def build_buffers(config: dict[str, Any], *, env_spec: EnvSpec, base_actor: ActorBundle | None = None) -> ReplayBufferCollection:
     """Build online/demo/intervention replay buffers."""
     replay_cfg = config["replay"]
     example = make_replay_example(
@@ -146,6 +200,13 @@ def build_buffers(config: dict[str, Any], *, env_spec: EnvSpec) -> ReplayBufferC
             )
         else:
             raise ValueError(f"Unsupported replay prefill format for {name}: {fmt!r}")
+        if bool(spec.get("cache_base_actions", False)):
+            dataset = _cache_residual_base_actions(
+                dataset,
+                base_actor=base_actor,
+                env_spec=env_spec,
+                seed=int(config["run"]["seed"]),
+            )
         return ReplayBuffer.create_from_initial_dataset(dataset, size, frame_stack=frame_stack)
 
     return ReplayBufferCollection(

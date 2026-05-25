@@ -45,9 +45,23 @@ def build_context(config: dict) -> TrainContext:
         seed=seed,
     )
 
+    rollout_execute = config["rollout"].get("execute", "learner")
+
+    base_spec = config.get("base")
+    base = None
+    if rollout_execute == "residual":
+        if base_spec is None:
+            raise ValueError("rollout.execute='residual' requires actors.base in the config.")
+        base = build_actor_bundle(
+            name="base",
+            spec=base_spec,
+            env_spec=env_spec,
+            batch_size=batch_size,
+            seed=seed + 2,
+        )
+
     expert_spec = config.get("expert")
     expert = None
-    rollout_execute = config["rollout"].get("execute", "learner")
     should_build_expert = bool(config["rollout"].get("sample_expert", False)) or rollout_execute in ("expert", "gate")
     if expert_spec is not None and should_build_expert:
         expert = build_actor_bundle(
@@ -58,7 +72,7 @@ def build_context(config: dict) -> TrainContext:
             seed=seed + 1,
         )
 
-    buffers = build_buffers(config, env_spec=env_spec)
+    buffers = build_buffers(config, env_spec=env_spec, base_actor=base)
     gate = build_gate(config)
 
     context = TrainContext(
@@ -67,6 +81,7 @@ def build_context(config: dict) -> TrainContext:
         env=env,
         eval_env=eval_env,
         learner=learner,
+        base=base,
         expert=expert,
         buffers=buffers,
         gate=gate,
@@ -84,6 +99,7 @@ def build_context(config: dict) -> TrainContext:
         f"run_dir={context.paths.run_dir} "
         f"env={context.config['env']['name']} "
         f"learner={context.learner.kind} "
+        f"base={context.base.kind if context.base else 'none'} "
         f"expert={context.expert.kind if context.expert else 'none'} "
         f"gate={context.config['gate'].get('kind', 'none')} "
         f"obs_kind={context.env_spec.obs_kind} "

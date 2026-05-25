@@ -27,12 +27,20 @@ ResFiT의 핵심은 frozen BC/diffusion base policy 위에 residual actor를 올
 actor는 residual `delta`만 출력하고, critic은 실제 실행 action `a_exec = clip(a_base + delta)`를
 학습한다. 세부 분석과 구현 로드맵은 [RESIDUAL_POLICY_ANALYSIS.md](RESIDUAL_POLICY_ANALYSIS.md)를 본다.
 
-우선순위:
+구현 완료:
 
 - `a_base`는 Q backprop에서 stop-gradient 처리한다.
 - replay schema에 `base_actions`, `residual_actions`, `next_base_actions`를 추가한다.
 - rollout에 base policy query와 residual composition path를 추가한다.
 - `residual_rlpd` 또는 동등한 config 표현을 정하고 actor/critic loss를 구현한다.
+- actor `horizon_length`와 replay/update `sequence_length`를 분리한다.
+- optional `cache_base_actions`로 prefill dataset의 residual metadata를 미리 채운다.
+
+남은 우선순위:
+
+- 실제 large Robomimic/ToolHang demo prefill에서 `cache_base_actions` runtime과 메모리 비용을 측정한다.
+- residual BC regularization / pretraining은 code-level smoke를 통과했다. 다음은 실제 실험 config에서 성능과 runtime을 검증한다.
+- learner/expert 일반 action chunk queue와 vector env별 queue를 설계한다.
 - PER는 residual 구현 검증 후 안정화 옵션으로 미룬다.
 
 
@@ -165,11 +173,12 @@ learner policy에 추가하는 recipe를 명확히 구현한다.
 - action chunking을 미룬 이유: [STATUS_2026-05-18.md#아직-남은-작업](STATUS_2026-05-18.md#아직-남은-작업)
 - n-step과 action chunk 관계: [REPLAY_AND_UPDATES.md#n-step-backup](REPLAY_AND_UPDATES.md#n-step-backup)
 
-추가 TODO:
+현재 상태:
 
-- BC action chunk horizon과 RL n-step backup horizon을 분리한다. 지금은 `horizon_length` 하나가 BC chunk target 길이와 RL n-step target 길이를 동시에 의미하므로, BC-only / RL-only / RL+BC 혼합 설정에서 불필요하게 묶인다.
-- 예시: BCFlow learner는 `bc_chunk_horizon=5`가 필요하지만, RLPD critic은 `td_n_step=1` 또는 `3`을 쓰고 싶을 수 있다. 반대로 SAC/RLPD actor는 primitive action만 내고 critic만 n-step을 쓸 수도 있다.
-- sampling config는 source별로 `sequence_length`를 명시하고, agent loss는 자신에게 필요한 action horizon과 TD horizon을 별도로 검증해야 한다.
+- replay/update path는 `sequence_length`를 TD backup 길이로 사용한다.
+- actor `horizon_length`는 action chunk output 길이로 남아 있다.
+- RLPD critic과 BC auxiliary critic은 실제 sampled `rewards.shape[-1]`를 TD exponent로 사용한다.
+- 아직 남은 문제는 learner/expert rollout queue다. residual frozen base policy queue는 구현됐지만, 일반 learner/expert policy가 서로 다른 horizon을 가질 때의 queue는 아직 별도 설계가 필요하다.
 
 구현 방향:
 

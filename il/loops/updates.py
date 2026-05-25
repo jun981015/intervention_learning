@@ -30,11 +30,16 @@ def _select_update_source(context: TrainContext, spec: dict[str, Any], train_cfg
 
 
 def _make_update_config(context: TrainContext, target: ActorBundle, spec: dict[str, Any]) -> TrainingConfig:
-    """Resolve update sampling knobs from recipe + target actor config."""
+    """Resolve update sampling knobs from recipe + target actor config.
+
+    `sequence_length` is the replay/TD horizon. It is intentionally separate
+    from an actor's `horizon_length`, which may mean action chunk length.
+    """
+    sequence_length = spec.get("sequence_length", spec.get("horizon_length", target.config.get("td_n_step", 1)))
     return TrainingConfig(
         batch_size=int(spec.get("batch_size", context.config["train"]["batch_size"])),
         utd_ratio=int(spec.get("utd_ratio", spec.get("utd", 1))),
-        horizon_length=int(spec.get("horizon_length", target.config.get("horizon_length", 1))),
+        horizon_length=int(sequence_length),
         discount=float(spec.get("discount", target.config.get("discount", 0.99))),
         sampling_fractions=spec.get("sampling_fractions"),
     )
@@ -87,6 +92,42 @@ def _assert_finite_target_actions(batch: dict, key: str, *, update_name: str) ->
     )
 
 
+def _assert_finite_batch_key(batch: dict, key: str, *, update_name: str, purpose: str) -> None:
+    """Fail fast if a required residual metadata array is missing or non-finite."""
+    if key not in batch:
+        raise KeyError(f"{purpose} key {key!r} is missing from sampled batch for {update_name!r}.")
+    values = np.asarray(batch[key])
+    finite = np.isfinite(values)
+    if bool(finite.all()):
+        return
+    bad_count = int(values.size - finite.sum())
+    raise ValueError(
+        f"{purpose} key {key!r} for update {update_name!r} contains "
+        f"{bad_count}/{values.size} NaN or Inf values. Residual RLPD requires base policy "
+        "actions to be stored before this batch can be used."
+    )
+
+
+def _assert_residual_metadata(target: ActorBundle, spec: dict[str, Any], batch: dict) -> None:
+    """Validate residual RLPD metadata before entering JAX update code."""
+    if not bool(target.config.get("residual_policy", False)):
+        return
+
+    update_name = spec.get("name") or target.name
+    _assert_finite_batch_key(batch, "base_actions", update_name=update_name, purpose="residual current base action")
+    _assert_finite_batch_key(batch, "next_base_actions", update_name=update_name, purpose="residual next base action")
+
+    if float(target.config.get("bc_alpha", 0.0)) == 0.0:
+        return
+    if "bc_actions" in batch and "bc_base_actions" not in batch:
+        raise KeyError(
+            f"Residual BC update {update_name!r} received auxiliary bc_actions without bc_base_actions. "
+            "Prefill/cache base policy actions for demo data before enabling residual BC."
+        )
+    bc_base_key = "bc_base_actions" if "bc_base_actions" in batch else "base_actions"
+    _assert_finite_batch_key(batch, bc_base_key, update_name=update_name, purpose="residual BC base action")
+
+
 def _prepare_target_action_batch(target: ActorBundle, spec: dict[str, Any], batch: dict) -> dict:
     """Alias requested action labels to the target actor's configured label key and validate them."""
     requested_key = spec.get("target_action_key")
@@ -129,6 +170,7 @@ def run_update_spec(context: TrainContext, spec: dict[str, Any]) -> dict[str, fl
     batch = _sample_update_batch(source, train_cfg)
     batch = _prepare_target_action_batch(target, spec, batch)
     batch = _add_aux_batches(context, target, spec, batch, train_cfg)
+    _assert_residual_metadata(target, spec, batch)
 
     if train_cfg.utd_ratio > 1:
         agent, info = target.agent.batch_update(batch)

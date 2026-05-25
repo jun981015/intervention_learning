@@ -104,7 +104,8 @@ def critic_td_loss(network, config, batch, grad_params, next_actions):
     rewards = sequence_last(batch, "rewards")
     masks = sequence_last(batch, "masks")
     valid = sequence_last(batch, "valid", default=jnp.ones_like(rewards))
-    target_q = rewards + (float(config["discount"]) ** int(config["horizon_length"])) * masks * next_q
+    td_n_step = batch["rewards"].shape[-1] if "rewards" in batch else int(config.get("td_n_step", 1))
+    target_q = rewards + (float(config["discount"]) ** td_n_step) * masks * next_q
     target_q = jax.lax.stop_gradient(target_q)
 
     q = network.select("critic")(batch["observations"], batch_actions, params=grad_params)
@@ -121,6 +122,7 @@ def critic_td_loss(network, config, batch, grad_params, next_actions):
         "target_q_mean": target_q.mean(),
         "td_error_abs_mean": jnp.mean(jnp.abs(td_error)),
         "valid_fraction": jnp.mean(valid),
+        "td_n_step": jnp.asarray(td_n_step, dtype=jnp.float32),
     }
 
 

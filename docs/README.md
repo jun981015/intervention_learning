@@ -28,3 +28,7 @@
 - 실행 명령어와 결과 요약은 사람이 빠르게 확인할 수 있게 적는다.
 - 큰 그림은 `WORKFLOW.md`에 두고, 세부 내용은 작업 단위별 문서에 둔다.
 - Codex/Claude에게 줄 세부 작업 지시는 `docs_agents/`에 영어로 분리한다.
+
+## 최근 추가 config
+
+- `config/smoke_residual_square.yaml`: frozen BCFlow base + residual RLPD learner rollout smoke

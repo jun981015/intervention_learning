@@ -1,0 +1,131 @@
+# Real-env smoke for frozen BCFlow base + random-init residual RLPD learner.
+# This checks residual action composition only; it does not run gradient updates.
+
+experiment:
+  name: square_residual_real_env_smoke
+  seed: 0
+  output_dir: exp/smoke
+  tags:
+    - square
+    - smoke
+    - residual
+    - bcflow_base
+    - rlpd_residual
+
+env:
+  kind: robomimic
+  name: square-mh-low_dim
+  observation_mode: lowdim
+  max_episode_steps: 400
+  render_offscreen: false
+  reward_scale: 1.0
+  reward_shift: 0.0
+  build_eval_env: false
+  eval_seed_offset: 10000
+
+actors:
+  base:
+    kind: bc_flow
+    trainable: false
+    pretrained_path: exp/pretrained/bcflow_square_top50_actorln_seed0_500k
+    checkpoint_step: 500000
+    policy_view: true
+    network: {}
+    optimization: {}
+    update: {}
+
+  learner:
+    kind: residual_rlpd
+    trainable: true
+    pretrained_path: null
+    checkpoint_step: null
+    policy_view: true
+    network:
+      actor_hidden_dims: [64, 64]
+      critic_hidden_dims: [64, 64]
+      actor_layer_norm: true
+      critic_layer_norm: true
+      horizon_length: 1
+      action_chunking: false
+      num_qs: 2
+      residual_scale: 0.1
+      residual_action_l2: 0.0
+    optimization:
+      lr: 3.0e-4
+      batch_size: 16
+      grad_clip_norm: null
+    update:
+      discount: 0.99
+      tau: 0.005
+      target_q_agg: min
+      target_entropy: null
+      target_entropy_multiplier: 0.5
+      init_temp: 1.0
+      bc_alpha: 0.0
+
+training:
+  total_steps: 100
+  start_training: 1000000
+  update_interval: 1
+  updates_per_step: 0
+  action_mode: first_action
+  action_composition: residual
+  reset_on_done: true
+
+replay:
+  buffers:
+    online_size: 1024
+    demo_size: 16
+    intervention_size: 16
+  prefill: {}
+  routing:
+    demo_insert_mode: none
+    include_failed_interventions: false
+  sampling:
+    rl:
+      source:
+        online: 1.0
+      sequence_length: 1
+      batch_size: 16
+      boundary_mode: drop
+
+intervention:
+  enabled: false
+  expert_query: never
+  gate:
+    kind: always_off
+
+storage:
+  store_executed_action: true
+  store_learner_action: true
+  store_expert_action: false
+  store_log_prob: true
+  store_gate_score: true
+  store_episode_metadata: true
+
+evaluation:
+  interval: 0
+  episodes: 0
+  seed: 1000
+  render_video: false
+  video_episodes: 0
+  action_mode: first_action
+
+logging:
+  stdout_interval: 20
+  csv: true
+  jsonl: true
+  wandb:
+    enabled: false
+    project: intervention_learning
+    group: smoke
+    name: square_residual_real_env_smoke_seed0
+    tags:
+      - smoke
+      - residual
+
+checkpointing:
+  interval: 0
+  save_final: false
+  save_replay: true
+  keep_last: 1
