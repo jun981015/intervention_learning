@@ -6,5 +6,6 @@ embedding environment interaction inside RL algorithm files.
 """
 
 from il.algo.rl.rlpd import ACRLPDAgent, get_config as get_rlpd_config
+from il.algo.rl.residual_rlpd import ResidualRLPDAgent, get_config as get_residual_rlpd_config
 
-__all__ = ["ACRLPDAgent", "get_rlpd_config"]
+__all__ = ["ACRLPDAgent", "ResidualRLPDAgent", "get_rlpd_config", "get_residual_rlpd_config"]

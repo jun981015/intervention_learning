@@ -10,6 +10,7 @@ import jax.numpy as jnp
 
 from il.algo.bc.flow import BCFlowAgent, get_config as get_bc_flow_config
 from il.algo.bc.mlp import BCMLPAgent, get_config as get_bc_mlp_config
+from il.algo.rl.residual_rlpd import ResidualRLPDAgent, get_config as get_residual_rlpd_config
 from il.algo.rl.rlpd import ACRLPDAgent, get_config as get_rlpd_config
 from il.builders.config import deep_update
 from il.builders.types import ActorBundle, EnvSpec
@@ -30,14 +31,15 @@ def default_agent_config(kind: str) -> dict[str, Any]:
         return _to_plain_dict(get_bc_flow_config())
     if kind == "bc_mlp":
         return _to_plain_dict(get_bc_mlp_config())
-    if kind in {"rlpd", "residual_rlpd"}:
+    if kind == "rlpd":
         cfg = _to_plain_dict(get_rlpd_config())
         cfg["target_entropy"] = None
-        if kind == "residual_rlpd":
-            cfg["agent_name"] = "residual_rlpd"
-            cfg["residual_policy"] = True
-            cfg.setdefault("residual_scale", 0.1)
-            cfg.setdefault("residual_action_l2", 0.0)
+        return cfg
+    if kind == "residual_rlpd":
+        cfg = _to_plain_dict(get_residual_rlpd_config())
+        cfg["target_entropy"] = None
+        cfg.setdefault("residual_scale", 0.1)
+        cfg.setdefault("residual_action_l2", 0.0)
         return cfg
     raise ValueError(f"Unsupported actor kind: {kind!r}")
 
@@ -125,8 +127,10 @@ def create_agent(
         return BCFlowAgent.create(seed, ex_observations, ex_actions, config)
     if kind == "bc_mlp":
         return BCMLPAgent.create(seed, ex_observations, ex_actions, config)
-    if kind in {"rlpd", "residual_rlpd"}:
+    if kind == "rlpd":
         return ACRLPDAgent.create(seed, ex_observations, ex_actions, config)
+    if kind == "residual_rlpd":
+        return ResidualRLPDAgent.create(seed, ex_observations, ex_actions, config)
     raise ValueError(f"Unsupported trainable actor kind: {kind!r}")
 
 

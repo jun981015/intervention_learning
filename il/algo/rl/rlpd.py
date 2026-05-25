@@ -52,66 +52,6 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
             return target_qs.mean(axis=0)
         raise ValueError(f"Unsupported target_q_agg: {self.config['target_q_agg']}")
 
-    def _is_residual_policy(self) -> bool:
-        """Return whether this agent outputs residual corrections."""
-        return bool(self.config.get("residual_policy", False))
-
-    def _sequence_first_action(self, value):
-        """Return the first primitive action from `[..., H, A]` or `[..., A]`."""
-        value = jnp.asarray(value)
-        return value[..., 0, :] if value.ndim >= 3 else value
-
-    def _sequence_last_action(self, value):
-        """Return the last primitive action from `[..., H, A]` or `[..., A]`."""
-        value = jnp.asarray(value)
-        return value[..., -1, :] if value.ndim >= 3 else value
-
-    def _augment_residual_observations(self, observations, base_actions):
-        """Append stop-gradient base actions to low-dim observations."""
-        return jnp.concatenate(
-            [jnp.asarray(observations), jax.lax.stop_gradient(jnp.asarray(base_actions))],
-            axis=-1,
-        )
-
-    def _current_observations(self, batch):
-        """Return observations in the shape expected by actor/critic modules."""
-        observations = batch["observations"]
-        if not self._is_residual_policy():
-            return observations
-        base_actions = self._sequence_first_action(batch["base_actions"])
-        return self._augment_residual_observations(observations, base_actions)
-
-    def _next_observations(self, batch):
-        """Return final bootstrap observations in module input shape."""
-        next_observations = batch["next_observations"][..., -1, :]
-        if not self._is_residual_policy():
-            return next_observations
-        next_base_actions = self._sequence_last_action(batch["next_base_actions"])
-        return self._augment_residual_observations(next_observations, next_base_actions)
-
-    def _compose_residual_action(self, base_actions, raw_residual_actions):
-        """Convert raw residual actor output into the executed action space."""
-        residual_scale = float(self.config.get("residual_scale", 1.0))
-        return jnp.clip(
-            jax.lax.stop_gradient(base_actions) + residual_scale * raw_residual_actions,
-            -1.0,
-            1.0,
-        )
-
-    def _actor_actions_for_q(self, batch, raw_actions):
-        """Return the action that Q should evaluate for actor gradients."""
-        if not self._is_residual_policy():
-            return raw_actions
-        base_actions = self._sequence_first_action(batch["base_actions"])
-        return self._compose_residual_action(base_actions, raw_actions)
-
-    def _target_actions_for_q(self, batch, raw_next_actions):
-        """Return target critic actions for the final next observation."""
-        if not self._is_residual_policy():
-            return raw_next_actions
-        next_base_actions = self._sequence_last_action(batch["next_base_actions"])
-        return self._compose_residual_action(next_base_actions, raw_next_actions)
-
     @jax.jit
     def evaluate_q_heads(self, observations, actions):
         """Evaluate all action-value heads for an arbitrary action proposal."""
@@ -137,20 +77,17 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
             batch_actions = batch["actions"][..., 0, :] # take the first action
 
         rng, sample_rng = jax.random.split(rng)
-        observations = self._current_observations(batch)
-        next_observations = self._next_observations(batch)
-
+        next_observations = batch['next_observations'][..., -1, :]
         next_dist = self.network.select('actor')(next_observations)
-        raw_next_actions = next_dist.sample(seed=sample_rng)
-        next_actions = self._target_actions_for_q(batch, raw_next_actions)
+        next_actions = next_dist.sample(seed=sample_rng)
 
         next_qs = self.network.select('target_critic')(next_observations, next_actions)
         next_q = self.aggregate_target_qs(next_qs)
 
         td_n_step = batch['rewards'].shape[-1]
         target_q = batch['rewards'][..., -1] + (self.config['discount'] ** td_n_step) * batch['masks'][..., -1] * next_q
-        
-        q = self.network.select('critic')(observations, batch_actions, params=grad_params)
+
+        q = self.network.select('critic')(batch['observations'], batch_actions, params=grad_params)
         critic_loss = (jnp.square(q - target_q) * batch['valid'][..., -1]).mean()
 
         return critic_loss, {
@@ -163,23 +100,22 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
 
     def actor_loss(self, batch, grad_params, rng):
         """Compute SAC policy, temperature, and optional BC regularization losses."""
-        observations = self._current_observations(batch)
-        dist = self.network.select('actor')(observations, params=grad_params)
-        raw_actions = dist.sample(seed=rng)
-        log_probs = dist.log_prob(raw_actions)
-        actions_for_q = self._actor_actions_for_q(batch, raw_actions)
+        bc_observations = batch.get("bc_observations", batch["observations"])
+        bc_raw_actions = batch.get("bc_actions", batch["actions"])
+        if self.config["action_chunking"]:
+            bc_actions = jnp.reshape(bc_raw_actions, (bc_raw_actions.shape[0], -1))
+        else:
+            bc_actions = bc_raw_actions[..., 0, :] # take the first action
+
+        dist = self.network.select('actor')(batch['observations'], params=grad_params)
+        actions = dist.sample(seed=rng)
+        log_probs = dist.log_prob(actions)
 
         # Actor loss.
-        qs = self.network.select('critic')(observations, actions_for_q)
+        qs = self.network.select('critic')(batch['observations'], actions)
         q = jnp.mean(qs, axis=0)
 
         actor_loss = (log_probs * self.network.select('alpha')() - q).mean()
-
-        residual_l2 = jnp.asarray(0.0, dtype=actor_loss.dtype)
-        if self._is_residual_policy():
-            residual_scale = float(self.config.get("residual_scale", 1.0))
-            residual_l2 = jnp.mean(jnp.sum((residual_scale * raw_actions) ** 2, axis=-1))
-            actor_loss = actor_loss + float(self.config.get("residual_action_l2", 0.0)) * residual_l2
 
         # Entropy loss.
         alpha = self.network.select('alpha')(params=grad_params)
@@ -188,36 +124,13 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
 
         # BC loss. If an auxiliary `bc_*` batch exists, it is typically sampled
         # from demos/expert data; otherwise this preserves the old in-batch BC.
-        bc_alpha = float(self.config["bc_alpha"])
-        if self._is_residual_policy():
-            if bc_alpha != 0.0:
-                bc_observations = batch.get("bc_observations", batch["observations"])
-                bc_raw_actions = batch.get("bc_actions", batch["actions"])
-                bc_base_raw = batch.get("bc_base_actions", batch["base_actions"])
-                bc_actions = self._sequence_first_action(bc_raw_actions)
-                bc_base_actions = self._sequence_first_action(bc_base_raw)
-                bc_aug_observations = self._augment_residual_observations(bc_observations, bc_base_actions)
-                residual_scale = max(float(self.config.get("residual_scale", 1.0)), 1e-6)
-                bc_delta_targets = (bc_actions - jax.lax.stop_gradient(bc_base_actions)) / residual_scale
-                bc_delta_targets = jnp.clip(bc_delta_targets, -1 + 1e-5, 1 - 1e-5)
-                bc_dist = self.network.select('actor')(bc_aug_observations, params=grad_params)
-                bc_loss_unscaled = -bc_dist.log_prob(bc_delta_targets).mean()
-            else:
-                bc_loss_unscaled = jnp.asarray(0.0, dtype=actor_loss.dtype)
-        else:
-            bc_observations = batch.get("bc_observations", batch["observations"])
-            bc_raw_actions = batch.get("bc_actions", batch["actions"])
-            if self.config["action_chunking"]:
-                bc_actions = jnp.reshape(bc_raw_actions, (bc_raw_actions.shape[0], -1))
-            else:
-                bc_actions = bc_raw_actions[..., 0, :] # take the first action
-            bc_dist = self.network.select('actor')(bc_observations, params=grad_params)
-            bc_loss_unscaled = -bc_dist.log_prob(jnp.clip(bc_actions, -1 + 1e-5, 1 - 1e-5)).mean()
-        bc_loss = bc_loss_unscaled * bc_alpha
+        bc_dist = self.network.select('actor')(bc_observations, params=grad_params)
+        bc_loss_unscaled = -bc_dist.log_prob(jnp.clip(bc_actions, -1 + 1e-5, 1 - 1e-5)).mean()
+        bc_loss = bc_loss_unscaled * self.config["bc_alpha"]
 
         total_loss = actor_loss + alpha_loss + bc_loss
 
-        info = {
+        return total_loss, {
             'total_loss': total_loss,
             'actor_loss': actor_loss,
             'alpha_loss': alpha_loss,
@@ -227,9 +140,6 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
             'entropy': -log_probs.mean(),
             'q': q.mean(),
         }
-        if self._is_residual_policy():
-            info['residual_l2'] = residual_l2
-        return total_loss, info
 
     @jax.jit
     def total_loss(self, batch, grad_params, rng=None):
@@ -401,10 +311,6 @@ def get_config():
             alpha=1.0,
             bc_alpha=0.0,
             target_q_agg='min',  # Aggregation for the first two target critics in TD backup.
-            residual_policy=False,
-            residual_scale=1.0,
-            residual_action_l2=0.0,
-            base_obs_dim=ml_collections.config_dict.placeholder(int),
             horizon_length=ml_collections.config_dict.placeholder(int), # will be set
             action_chunking=True,
             init_temp=1.0,

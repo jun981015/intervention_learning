@@ -14,6 +14,7 @@ from gymnasium.spaces import Box, Dict
 
 from il.algo.bc.flow import BCFlowAgent, get_config as get_bc_flow_config
 from il.algo.bc.mlp import BCMLPAgent, get_config as get_bc_mlp_config
+from il.algo.rl.residual_rlpd import ResidualRLPDAgent, get_config as get_residual_rlpd_config
 from il.algo.rl.rlpd import ACRLPDAgent, get_config as get_rlpd_config
 from il.buffers.mixed import MixedReplaySampler, MixedSamplingSpec, ReplayBufferCollection
 from il.buffers.replay_buffer import ReplayBuffer
@@ -667,7 +668,7 @@ def smoke_residual_transition_schema(obs_dim: int, action_dim: int) -> None:
 
 def smoke_residual_rlpd(obs_dim: int, action_dim: int) -> None:
     """Check residual RLPD updates with base-action augmented observations."""
-    config = get_rlpd_config()
+    config = get_residual_rlpd_config()
     config.horizon_length = 1
     config.action_chunking = False
     config.actor_hidden_dims = (32, 32)
@@ -676,7 +677,6 @@ def smoke_residual_rlpd(obs_dim: int, action_dim: int) -> None:
     config.num_qs = 2
     config.target_q_agg = "min"
     config.grad_clip_norm = None
-    config.residual_policy = True
     config.residual_scale = 0.1
     config.residual_action_l2 = 0.01
     config.base_obs_dim = obs_dim
@@ -684,7 +684,7 @@ def smoke_residual_rlpd(obs_dim: int, action_dim: int) -> None:
 
     ex_observations = jnp.zeros((config.batch_size, obs_dim + action_dim), dtype=jnp.float32)
     ex_actions = jnp.zeros((config.batch_size, action_dim), dtype=jnp.float32)
-    agent = ACRLPDAgent.create(10, ex_observations, ex_actions, config)
+    agent = ResidualRLPDAgent.create(10, ex_observations, ex_actions, config)
     batch = make_update_batch(config.batch_size, obs_dim, action_dim, config.horizon_length)
     batch["base_actions"] = np.full((config.batch_size, config.horizon_length, action_dim), 0.2, dtype=np.float32)
     batch["next_base_actions"] = np.full((config.batch_size, config.horizon_length, action_dim), 0.1, dtype=np.float32)
@@ -700,7 +700,7 @@ def smoke_residual_rlpd(obs_dim: int, action_dim: int) -> None:
 
 def smoke_residual_rlpd_with_bc_aux(obs_dim: int, action_dim: int) -> None:
     """Check residual BC regularization can train against cached demo base actions."""
-    config = get_rlpd_config()
+    config = get_residual_rlpd_config()
     config.horizon_length = 1
     config.action_chunking = False
     config.actor_hidden_dims = (32, 32)
@@ -709,7 +709,6 @@ def smoke_residual_rlpd_with_bc_aux(obs_dim: int, action_dim: int) -> None:
     config.num_qs = 2
     config.target_q_agg = "min"
     config.grad_clip_norm = None
-    config.residual_policy = True
     config.residual_scale = 1.0
     config.residual_action_l2 = 0.0
     config.base_obs_dim = obs_dim
@@ -717,7 +716,7 @@ def smoke_residual_rlpd_with_bc_aux(obs_dim: int, action_dim: int) -> None:
 
     ex_observations = jnp.zeros((config.batch_size, obs_dim + action_dim), dtype=jnp.float32)
     ex_actions = jnp.zeros((config.batch_size, action_dim), dtype=jnp.float32)
-    agent = ACRLPDAgent.create(12, ex_observations, ex_actions, config)
+    agent = ResidualRLPDAgent.create(12, ex_observations, ex_actions, config)
 
     batch = make_update_batch(config.batch_size, obs_dim, action_dim, config.horizon_length)
     batch["base_actions"] = np.full((config.batch_size, config.horizon_length, action_dim), 0.2, dtype=np.float32)

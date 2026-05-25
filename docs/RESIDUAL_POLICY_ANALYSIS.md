@@ -297,9 +297,10 @@ gate on: execute expert action
 구현된 것:
 
 - `actors.base`를 optional frozen base actor로 build한다.
-- `learner.kind: residual_rlpd`를 추가했다. 내부는 기존 RLPD agent를 쓰되 `residual_policy=True`로 동작한다.
+- `learner.kind: residual_rlpd`를 추가했고, residual 전용 loss/composition은 `il/algo/rl/residual_rlpd.py`의 `ResidualRLPDAgent`가 담당한다.
 - rollout `execute: residual`은 `a_base = base_policy(s)`, `delta = learner(s, a_base)`, `a_exec = clip(a_base + residual_scale * delta)`를 실행한다.
 - replay transition에 `base_actions`, `residual_actions`, `next_base_actions`를 저장한다.
+- `ACRLPDAgent`는 일반 RLPD/SAC-style agent로 되돌리고, residual-specific branch를 넣지 않는다.
 - residual RLPD critic은 combined `actions`를 학습한다.
 - residual RLPD actor loss는 `Q(concat(s, a_base), clip(a_base + residual_scale * delta))`를 사용한다.
 - `a_base`와 `next_base_action`은 Q/actor target 경로에서 stop-gradient 처리한다.
