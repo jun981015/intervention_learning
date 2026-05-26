@@ -159,7 +159,31 @@ def _add_aux_batches(context: TrainContext, target: ActorBundle, spec: dict[str,
     return batch
 
 
-def run_update_spec(context: TrainContext, spec: dict[str, Any]) -> dict[str, float]:
+def _should_update_actor(target: ActorBundle, spec: dict[str, Any], *, step: int | None) -> bool:
+    """Return whether actor updates are enabled at this training step."""
+    if "update_actor" in spec:
+        return bool(spec["update_actor"])
+    warmup_steps = int(spec.get("critic_warmup_steps", target.config.get("critic_warmup_steps", 0)))
+    if step is not None and warmup_steps > 0 and step <= warmup_steps:
+        return False
+    return True
+
+
+def _update_agent(target: ActorBundle, batch: dict, train_cfg: TrainingConfig, *, update_actor: bool):
+    """Dispatch to full or critic-only update APIs."""
+    if update_actor:
+        if train_cfg.utd_ratio > 1:
+            return target.agent.batch_update(batch)
+        return target.agent.update(batch)
+
+    if train_cfg.utd_ratio > 1 and hasattr(target.agent, "batch_update_critic_only"):
+        return target.agent.batch_update_critic_only(batch)
+    if train_cfg.utd_ratio == 1 and hasattr(target.agent, "update_critic_only"):
+        return target.agent.update_critic_only(batch)
+    raise ValueError(f"Update target {target.name!r} does not support critic-only warmup updates.")
+
+
+def run_update_spec(context: TrainContext, spec: dict[str, Any], *, step: int | None = None) -> dict[str, float]:
     """Run one configured learner update and return scalar metrics."""
     target = _target_bundle(context, spec.get("target", "learner"))
     if target.agent is None:
@@ -172,10 +196,11 @@ def run_update_spec(context: TrainContext, spec: dict[str, Any]) -> dict[str, fl
     batch = _add_aux_batches(context, target, spec, batch, train_cfg)
     _assert_residual_metadata(target, spec, batch)
 
-    if train_cfg.utd_ratio > 1:
-        agent, info = target.agent.batch_update(batch)
-    else:
-        agent, info = target.agent.update(batch)
+    update_actor = _should_update_actor(target, spec, step=step)
+    agent, info = _update_agent(target, batch, train_cfg, update_actor=update_actor)
     _set_bundle_agent(target, agent)
     prefix = spec.get("name") or target.name
-    return {f"{prefix}/{key}": value for key, value in _tree_to_float_dict(info).items()}
+    metrics = {f"{prefix}/{key}": value for key, value in _tree_to_float_dict(info).items()}
+    metrics[f"{prefix}/update_actor"] = float(update_actor)
+    metrics[f"{prefix}/critic_warmup_active"] = float(not update_actor)
+    return metrics

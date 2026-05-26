@@ -11,6 +11,7 @@ import jax.numpy as jnp
 from il.algo.bc.flow import BCFlowAgent, get_config as get_bc_flow_config
 from il.algo.bc.mlp import BCMLPAgent, get_config as get_bc_mlp_config
 from il.algo.rl.residual_rlpd import ResidualRLPDAgent, get_config as get_residual_rlpd_config
+from il.algo.rl.residual_td3 import ResidualTD3Agent, get_config as get_residual_td3_config
 from il.algo.rl.rlpd import ACRLPDAgent, get_config as get_rlpd_config
 from il.builders.config import deep_update
 from il.builders.types import ActorBundle, EnvSpec
@@ -39,6 +40,11 @@ def default_agent_config(kind: str) -> dict[str, Any]:
         cfg = _to_plain_dict(get_residual_rlpd_config())
         cfg["target_entropy"] = None
         cfg.setdefault("residual_scale", 0.1)
+        cfg.setdefault("residual_action_l2", 0.0)
+        return cfg
+    if kind == "residual_td3":
+        cfg = _to_plain_dict(get_residual_td3_config())
+        cfg.setdefault("residual_scale", 0.2)
         cfg.setdefault("residual_action_l2", 0.0)
         return cfg
     raise ValueError(f"Unsupported actor kind: {kind!r}")
@@ -99,11 +105,11 @@ def resolve_agent_config(
     config["action_dim"] = int(env_spec.action_dim)
     if kind == "bc_flow":
         config["ob_dims"] = tuple(config.get("ob_dims") or (env_spec.obs_dim,))
-    if kind == "residual_rlpd":
+    if kind in {"residual_rlpd", "residual_td3"}:
         config["residual_policy"] = True
         config["base_obs_dim"] = int(env_spec.obs_dim)
         if bool(config.get("action_chunking", False)):
-            raise NotImplementedError("residual_rlpd v0 supports primitive actions only; set action_chunking=False.")
+            raise NotImplementedError(f"{kind} v0 supports primitive actions only; set action_chunking=False.")
     return config
 
 
@@ -119,7 +125,7 @@ def create_agent(
     if env_spec.obs_dim is None:
         raise NotImplementedError("Image observations need an encoder-backed agent implementation.")
     obs_dim = int(env_spec.obs_dim)
-    if kind == "residual_rlpd":
+    if kind in {"residual_rlpd", "residual_td3"}:
         obs_dim += int(env_spec.action_dim)
     ex_observations = jnp.zeros((batch_size, obs_dim), dtype=jnp.float32)
     ex_actions = jnp.zeros((batch_size, env_spec.action_dim), dtype=jnp.float32)
@@ -131,6 +137,8 @@ def create_agent(
         return ACRLPDAgent.create(seed, ex_observations, ex_actions, config)
     if kind == "residual_rlpd":
         return ResidualRLPDAgent.create(seed, ex_observations, ex_actions, config)
+    if kind == "residual_td3":
+        return ResidualTD3Agent.create(seed, ex_observations, ex_actions, config)
     raise ValueError(f"Unsupported trainable actor kind: {kind!r}")
 
 
@@ -158,7 +166,7 @@ def build_actor_bundle(
     pretrained_config, metadata, checkpoint_path = load_pretrained_state(spec)
     if metadata:
         expected_obs_dim = env_spec.obs_dim
-        if kind == "residual_rlpd" and expected_obs_dim is not None:
+        if kind in {"residual_rlpd", "residual_td3"} and expected_obs_dim is not None:
             expected_obs_dim = int(expected_obs_dim) + int(env_spec.action_dim)
         if expected_obs_dim is not None and int(metadata.get("obs_dim", expected_obs_dim)) != expected_obs_dim:
             raise ValueError(f"{name} pretrained obs_dim does not match expected obs_dim.")
@@ -193,7 +201,7 @@ def build_actor_bundle(
             agent=agent,
             kind=kind,
             checkpoint_path=checkpoint_path,
-            obs_dim=int(env_spec.obs_dim) + (env_spec.action_dim if kind == "residual_rlpd" else 0),
+            obs_dim=int(env_spec.obs_dim) + (env_spec.action_dim if kind in {"residual_rlpd", "residual_td3"} else 0),
             action_dim=env_spec.action_dim,
             horizon_length=int(config["horizon_length"]),
             action_chunking=bool(config.get("action_chunking", False)),

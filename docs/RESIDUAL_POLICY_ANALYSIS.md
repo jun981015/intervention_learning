@@ -308,13 +308,14 @@ gate on: execute expert action
 - base policy가 `full_action_chunk`를 반환하면 rollout queue에서 primitive action을 한 step씩 pop한다.
 - replay/update spec의 `sequence_length`를 actor `horizon_length`와 분리했다. critic TD target은 실제 sampled batch sequence 길이를 사용한다.
 - prefill dataset에 `cache_base_actions: true`를 주면 frozen base policy로 `base_actions`와 `next_base_actions`를 채울 수 있다.
-- smoke test에 residual transition schema, residual RLPD update, residual BC auxiliary update, base action chunk queue, TD sequence length, base-action cache 검증을 추가했다.
+- smoke test에 residual transition schema, residual RLPD update, residual critic-only warmup update, residual BC auxiliary update, base action chunk queue, base+noise rollout warmup, TD sequence length, base-action cache 검증을 추가했다.
 
 아직 안 된 것:
 
 - learner/expert 일반 action chunk queue와 vector env별 queue. 현재 구현된 것은 residual rollout의 frozen base policy queue다. residual actor 자체는 primitive action만 지원한다.
 - residual BC pretraining 또는 residual actor BC regularization을 실제 큰 실험 config에서 검증하는 작업. 코드 smoke는 통과하지만, 큰 robomimic dataset에서 cache/runtime 비용은 아직 따로 측정하지 않았다.
-- action scaler. 현재는 Robomimic `[-1, 1]` action clip 기준이다.
+- ActionScaler. 현재는 Robomimic `[-1, 1]` action clip 기준이다.
+  - 현재 square/tool_hang low-dim wrapper action space와 dataset action range는 `[-1, 1]` 범위로 확인했다. 다른 task/action convention을 붙일 때 ActionScaler를 다시 검토한다.
 - PER와 large Q ensemble.
 
 2026-05-25 Phase 1 결정:
@@ -345,6 +346,49 @@ gate on: execute expert action
 - `replay.prefill.<buffer>.cache_base_actions: true`를 명시한 경우에만 frozen `actors.base`를 prefill dataset에 돌려 residual metadata를 채운다. 큰 dataset에서 policy inference 비용이 커질 수 있으므로 자동으로 켜지 않는다.
 - cache는 rollout과 같은 base action queue helper를 사용한다. `base_actions[i]`는 current obs에서 쓸 base action이고, `next_base_actions[i]`는 다음 state에서 target actor가 사용할 action이다.
 - 캐시된 demo의 `actions`는 그대로 expert/demo action으로 유지한다. `residual_actions`는 diagnostic용으로 `actions - base_actions`를 저장한다. residual BC target은 update에서 `(bc_actions - bc_base_actions) / residual_scale`로 계산한다.
+
+2026-05-25 Phase 5 결정:
+
+- `ResidualRLPDAgent`에 critic-only update API를 추가했다. `critic_warmup_steps > 0`이면 train step이 warmup 구간일 때 update runner가 actor/alpha/BC loss 없이 critic loss만 업데이트한다.
+- residual actor만 `actor_final_fc_init_scale=1e-2`로 mean/log-std output head를 작게 초기화한다. plain RLPD config에는 이 ResFiT 전용 hyperparameter를 두지 않는다.
+- residual rollout에 base+noise warmup을 추가했다. `residual_warmup_steps > 0`인 동안 residual actor를 query하지 않고 `a_exec = clip(a_base + noise)`를 실행한다.
+- `use_base_policy_for_warmup=false`이면 원본 ResFiT처럼 `residual = pure_random - a_base`로 만들어 실행 action을 pure random에 가깝게 만든다.
+- 이 기능들은 intervention/gate와 분리된 expert 학습용 residual path에만 적용한다.
+- 원본 ResFiT은 DDPG/TD3-style deterministic actor에 exploration noise를 얹는 구조이고, 우리 v0는 RLPD/SAC-style `TanhNormal` residual actor를 쓴다. 따라서 policy head와 entropy objective는 원본 재현이 아니라 변형이다.
+- 당장 이 차이는 실험 blocker로 보지 않는다. 좋은 residual 알고리즘이면 policy-head 차이에 과하게 민감하지 않아야 하고, frozen diffusion/BC base policy가 충분히 강하다는 가정 아래 우선 학습 실험을 진행한다.
+
+
+2026-05-25 Phase 6 결정: residual TD3 path
+
+- `ResidualTD3Agent`를 `ResidualRLPDAgent`와 별도 파일 `il/algo/rl/residual_td3.py`로 추가했다. plain RLPD나 SAC-style residual path에 TD3 branch를 섞지 않는다.
+- 원본 ResFiT 논문/코드의 핵심 default를 우선 반영했다: deterministic tanh residual actor, target actor, target policy smoothing, delayed actor update, critic-only warmup, base+noise warmup.
+- 원본 코드 기준 주요 값은 `num_updates_per_iteration=4`, `actor_updates_per_iteration=1`, `update_every_n_steps=1`이다. 우리 config에서는 `replay.sampling.rl.utd_ratio=4`와 `actor_update_interval=4`로 표현한다. metrics의 `actor/update_actor`는 UTD scan 평균이라 4개 update 중 1번 actor update면 `0.25`로 찍힌다.
+- 원본 코드 기준 residual actor는 `tanh` 출력에 `action_scale`을 곱한다. 우리 구현은 actor가 raw `[-1, 1]` residual을 내고 rollout/update composition에서 `residual_scale`을 곱한다. 따라서 `residual_scale`이 원본 `action_scale`에 해당한다.
+- 원본 config의 기본 residual scale/action scale은 `0.1`이고 paper run 예시는 `0.2`를 자주 쓴다. ToolHang TD3 config는 우선 `residual_scale=0.2`로 둔다.
+- 원본 config는 actor lr `1e-6`, critic lr `1e-4`, critic target tau `0.005`, actor final layer init scale `0.0`, critic warmup `10k`를 쓴다. 우리 TD3 config도 이 값을 기본으로 맞췄다.
+- `residual_td3`는 SAC entropy/alpha가 없다. actor objective는 `-Q(s, clip(a_base + residual_scale * actor(s, a_base)))`이고, optional residual BC MSE만 더한다.
+- critic target은 `target_actor(next_s, next_a_base)`로 residual을 만들고 target policy smoothing noise를 residual action space에 더한 뒤 `clip(next_a_base + residual, -1, 1)`을 쓴다.
+- 현재 구현은 Robomimic low-dim `[-1, 1]` action convention에 맞춘다. 원본 ResFiT의 `ActionScaler`/state standardizer는 아직 넣지 않았다.
+- 원본 논문: https://arxiv.org/abs/2509.19301
+- 원본 local code references:
+  - `/home/junhyeong/repos/residual-offpolicy-rl/resfit/rl_finetuning/config/residual_td3.py`
+  - `/home/junhyeong/repos/residual-offpolicy-rl/resfit/rl_finetuning/off_policy/rl/q_agent.py`
+  - `/home/junhyeong/repos/residual-offpolicy-rl/resfit/rl_finetuning/off_policy/rl/actor.py`
+
+추가 검증:
+
+```bash
+python -m compileall il/algo/rl/residual_td3.py il/builders/actors.py il/builders/config.py il/algo/rl/__init__.py
+env JAX_PLATFORM_NAME=cpu WANDB_MODE=disabled conda run -n il python -m il.train --config config/smoke_residual_td3_square.yaml --build-only
+env JAX_PLATFORM_NAME=cpu WANDB_MODE=disabled conda run -n il python -m il.train --config config/tool_hang_residual_td3_bcflow_top200_mixed50_shiftm1_nstep5_scale02_seed0_2m.yaml --build-only
+env JAX_PLATFORM_NAME=cpu WANDB_MODE=disabled conda run -n il python -m il.train --config config/smoke_residual_td3_square.yaml
+```
+
+검증 결과:
+
+- Square residual TD3 smoke는 real env rollout과 UTD=4 update path를 통과했다.
+- smoke metric에서 `learner_rl/actor/update_actor=0.25`가 찍혀 delayed actor update가 UTD 4 중 1회로 동작함을 확인했다.
+- ToolHang residual TD3 config는 build-only를 통과했다.
 
 검증:
 

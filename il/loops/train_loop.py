@@ -249,7 +249,7 @@ def run_train_loop(context: TrainContext) -> TrainContext:
         if step >= start_training:
             for update_spec in context.update_specs:
                 try:
-                    step_update_metrics.update(run_update_spec(context, update_spec))
+                    step_update_metrics.update(run_update_spec(context, update_spec, step=step))
                 except ValueError as exc:
                     if "smaller than sequence_length" not in str(exc):
                         raise
@@ -297,7 +297,8 @@ def run_train_loop(context: TrainContext) -> TrainContext:
             _save_train_state(context, step)
 
     _save_train_state(context, steps)
-    _save_buffers(context)
+    if bool(context.recipe.train.get("save_replay", True)):
+        _save_buffers(context)
     logger.close()
     print(f"[train] finished run_dir={context.paths.run_dir}", flush=True)
     return context

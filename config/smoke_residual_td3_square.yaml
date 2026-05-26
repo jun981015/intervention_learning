@@ -1,16 +1,15 @@
-# Real-env smoke for frozen BCFlow base + random-init residual RLPD learner.
-# This checks residual action composition only; it does not run gradient updates.
+# Real-env smoke for frozen BCFlow base + random-init residual TD3 learner.
 
 experiment:
-  name: square_residual_real_env_smoke
+  name: square_residual_td3_real_env_smoke
   seed: 0
   output_dir: exp/smoke
   tags:
     - square
     - smoke
     - residual
+    - td3
     - bcflow_base
-    - rlpd_residual
 
 env:
   kind: robomimic
@@ -35,7 +34,7 @@ actors:
     update: {}
 
   learner:
-    kind: residual_rlpd
+    kind: residual_td3
     trainable: true
     pretrained_path: null
     checkpoint_step: null
@@ -48,27 +47,34 @@ actors:
       horizon_length: 1
       action_chunking: false
       num_qs: 2
-      residual_scale: 0.1
+      residual_scale: 0.2
       residual_action_l2: 0.0
+      actor_final_fc_init_scale: 0.0
     optimization:
-      lr: 3.0e-4
-      batch_size: 16
-      grad_clip_norm: null
+      lr: 1.0e-4
+      actor_lr: 1.0e-6
+      critic_lr: 1.0e-4
+      batch_size: 4
+      grad_clip_norm: 1.0
     update:
       discount: 0.99
       tau: 0.005
       target_q_agg: min
-      target_entropy: null
-      target_entropy_multiplier: 0.5
-      init_temp: 1.0
+      actor_q_agg: mean
+      target_policy_noise: true
+      target_noise_std: 0.05
+      target_noise_clip: 0.3
+      exploration_noise: 0.05
+      exploration_noise_clip: 0.3
       bc_alpha: 0.0
-      critic_warmup_steps: 10
+      critic_warmup_steps: 4
+      actor_update_interval: 4
 
 training:
-  total_steps: 100
-  start_training: 1000000
+  total_steps: 20
+  start_training: 8
   update_interval: 1
-  updates_per_step: 0
+  updates_per_step: 1
   action_mode: first_action
   action_composition: residual
   residual_warmup_steps: 5
@@ -90,7 +96,8 @@ replay:
       source:
         online: 1.0
       sequence_length: 1
-      batch_size: 16
+      batch_size: 4
+      utd_ratio: 4
       boundary_mode: drop
 
 intervention:
@@ -116,17 +123,17 @@ evaluation:
   action_mode: first_action
 
 logging:
-  stdout_interval: 20
+  stdout_interval: 10
   csv: true
   jsonl: true
   wandb:
     enabled: false
     project: intervention_learning
     group: smoke
-    name: square_residual_real_env_smoke_seed0
+    name: square_residual_td3_real_env_smoke_seed0
     tags:
       - smoke
-      - residual
+      - residual_td3
 
 checkpointing:
   interval: 0

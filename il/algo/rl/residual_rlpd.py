@@ -13,10 +13,20 @@ import jax.numpy as jnp
 import ml_collections
 
 from il.algo.rl.rlpd import ACRLPDAgent, get_config as get_rlpd_config
+from il.distributions import TanhNormal
 
 
 class ResidualRLPDAgent(ACRLPDAgent):
     """RLPD/SAC-style residual actor-critic for ResFiT expert training."""
+
+    @classmethod
+    def actor_distribution_def(cls, actor_base_cls, action_dim, config):
+        """Build a residual actor with a small output-head initialization."""
+        return TanhNormal(
+            actor_base_cls,
+            action_dim,
+            final_fc_init_scale=float(config.get("actor_final_fc_init_scale", 1e-2)),
+        )
 
     def _sequence_first_action(self, value):
         """Return the first primitive action from `[..., H, A]` or `[..., A]`."""
@@ -88,6 +98,19 @@ class ResidualRLPDAgent(ACRLPDAgent):
             "td_n_step": jnp.asarray(td_n_step, dtype=jnp.float32),
         }
 
+    @jax.jit
+    def critic_only_loss(self, batch, grad_params, rng=None):
+        """Compute critic-only loss for ResFiT critic warmup."""
+        info = {}
+        rng = rng if rng is not None else self.rng
+        rng, critic_rng = jax.random.split(rng)
+
+        critic_loss, critic_info = self.critic_loss(batch, grad_params, critic_rng)
+        for key, value in critic_info.items():
+            info[f"critic/{key}"] = value
+        info["actor/update_actor"] = jnp.asarray(0.0, dtype=jnp.float32)
+        return critic_loss, info
+
     def actor_loss(self, batch, grad_params, rng):
         """Compute residual actor, temperature, residual L2, and optional BC losses."""
         observations = self._current_observations(batch)
@@ -138,7 +161,32 @@ class ResidualRLPDAgent(ACRLPDAgent):
             "entropy": -log_probs.mean(),
             "q": q.mean(),
             "residual_l2": residual_l2,
+            "update_actor": jnp.asarray(1.0, dtype=jnp.float32),
         }
+
+    @staticmethod
+    def _critic_only_update(agent, batch):
+        """Apply one critic-only gradient update and then update the target critic."""
+        new_rng, rng = jax.random.split(agent.rng)
+
+        def loss_fn(grad_params):
+            """Closure passed to TrainState for differentiating only critic loss."""
+            return agent.critic_only_loss(batch, grad_params, rng=rng)
+
+        new_network, info = agent.network.apply_loss_fn(loss_fn=loss_fn)
+        agent.target_update(new_network, "critic")
+        return agent.replace(network=new_network, rng=new_rng), info
+
+    @jax.jit
+    def update_critic_only(self, batch):
+        """Run one JIT-compiled critic-only update."""
+        return self._critic_only_update(self, batch)
+
+    @jax.jit
+    def batch_update_critic_only(self, batch):
+        """Run multiple critic-only updates with `lax.scan` over a UTD batch."""
+        agent, infos = jax.lax.scan(self._critic_only_update, self, batch)
+        return agent, jax.tree_util.tree_map(lambda x: x.mean(), infos)
 
 
 def get_config():
@@ -148,5 +196,7 @@ def get_config():
     config.residual_policy = True
     config.residual_scale = 1.0
     config.residual_action_l2 = 0.0
+    config.critic_warmup_steps = 0
+    config.actor_final_fc_init_scale = 1e-2
     config.base_obs_dim = ml_collections.config_dict.placeholder(int)
     return config

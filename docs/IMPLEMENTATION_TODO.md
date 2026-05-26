@@ -35,13 +35,18 @@ actor는 residual `delta`만 출력하고, critic은 실제 실행 action `a_exe
 - `residual_rlpd` 또는 동등한 config 표현을 정하고 actor/critic loss를 구현한다.
 - actor `horizon_length`와 replay/update `sequence_length`를 분리한다.
 - optional `cache_base_actions`로 prefill dataset의 residual metadata를 미리 채운다.
+- residual critic-only warmup update를 지원한다.
+- residual rollout에서 base+noise warmup을 지원한다.
+- residual actor output head를 작게 초기화하는 `actor_final_fc_init_scale`을 지원한다.
+- `residual_td3`를 추가했다. deterministic residual actor, target actor, target policy smoothing, delayed actor update, UTD=4 config path를 지원한다.
 
 남은 우선순위:
 
 - 실제 large Robomimic/ToolHang demo prefill에서 `cache_base_actions` runtime과 메모리 비용을 측정한다.
 - residual BC regularization / pretraining은 code-level smoke를 통과했다. 다음은 실제 실험 config에서 성능과 runtime을 검증한다.
 - learner/expert 일반 action chunk queue와 vector env별 queue를 설계한다.
-- PER는 residual 구현 검증 후 안정화 옵션으로 미룬다.
+- ActionScaler는 Robomimic `[-1, 1]` action clip 밖의 task가 필요해질 때 추가한다.
+- PER와 large Q ensemble은 residual 구현 검증 후 안정화 옵션으로 미룬다.
 
 
 ### 1. 현재 문서와 코드 상태 동기화
@@ -274,6 +279,7 @@ env와 replay는 image observation 저장을 지원하지만, actor/critic netwo
 - learner/expert action L2, action clipping fraction, gripper stat을 기록한다.
 - action entropy와 action variance를 기록해서 policy collapse 또는 과도한 randomization을 본다.
 - state distribution health를 기록한다. 우선 online running stat과 demo/offline baseline stat의 mean/std drift, out-of-dataset z-score fraction을 본다.
+- state normalization은 후속 구현으로 둔다. 기본 방향은 offline/demo dataset stat을 baseline으로 만들고, online rollout 중 running stat을 따로 추적해서 normalize 적용 여부와 distribution drift logging을 분리하는 것이다.
 - CSV write frequency와 append/rotate 정책을 config로 분리한다. 긴 run에서 flush마다 전체 CSV rewrite를 피한다.
 - gate intervention rate와 expert execute rate를 기록한다.
 

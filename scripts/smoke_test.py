@@ -26,7 +26,7 @@ from il.gating.expert_q_gap import ExpertQGapGate
 from il.gating.random_gate import RandomGate
 from il.envs.robomimic_lowdim import RobomimicLowdimWrapper
 from il.logger import MetricLogger
-from il.loops.rollout import prepare_next_base_action, reset_rollout_state, sample_base_action
+from il.loops.rollout import choose_rollout_action, prepare_next_base_action, reset_rollout_state, sample_base_action
 from il.loops.updates import _assert_residual_metadata
 from il.policies.bc_flow import BCFlowPolicy
 from il.policies.rlpd import RLPDPolicy
@@ -150,6 +150,14 @@ class ChunkPolicy:
         return PolicyOutput(action=self.chunk.reshape(-1).copy(), log_prob=0.0)
 
 
+class FailingPolicy:
+    """Policy stub used to assert a rollout path does not query a policy."""
+
+    def sample_action(self, observation: np.ndarray, *, rng) -> PolicyOutput:
+        del observation, rng
+        raise AssertionError("policy should not be queried")
+
+
 def smoke_base_action_chunk_queue() -> None:
     """Check ResFit-style base action chunks are popped one primitive action at a time."""
     chunk = np.asarray([[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]], dtype=np.float32)
@@ -191,6 +199,47 @@ def smoke_base_action_chunk_queue() -> None:
     assert np.allclose(sample_base_action(flat_context, observation, rng=None).action, chunk[0])
     assert np.allclose(sample_base_action(flat_context, observation, rng=None).action, chunk[1])
     assert flat_policy.calls == 1
+
+
+def smoke_residual_base_noise_warmup() -> None:
+    """Check residual rollout can collect base+noise warmup without querying learner."""
+    base_action = np.asarray([0.2, -0.1], dtype=np.float32)
+    context = SimpleNamespace(
+        base=SimpleNamespace(
+            kind="bc_flow",
+            checkpoint_path=None,
+            policy=ConstantPolicy(base_action),
+        ),
+        learner=SimpleNamespace(
+            config={"residual_scale": 0.1},
+            policy=FailingPolicy(),
+        ),
+        expert=None,
+        action_dim=2,
+        env_spec=SimpleNamespace(state_key=None),
+        rollout_state={},
+        rng=jax.random.PRNGKey(0),
+        config={
+            "rollout": {
+                "execute": "residual",
+                "sample_expert": False,
+                "residual_warmup_steps": 5,
+                "warmup_noise_scale": 0.0,
+                "use_base_policy_for_warmup": True,
+            }
+        },
+    )
+    action, learner_output, expert_output, decision = choose_rollout_action(
+        context,
+        np.zeros(4, dtype=np.float32),
+        step=1,
+    )
+
+    assert np.allclose(action, base_action)
+    assert np.allclose(learner_output.action, np.zeros_like(base_action))
+    assert learner_output.info["residual_warmup"] == 1
+    assert np.isnan(expert_output.action).all()
+    assert not decision.use_expert
 
 
 def smoke_gate_and_replay() -> None:
@@ -688,6 +737,9 @@ def smoke_residual_rlpd(obs_dim: int, action_dim: int) -> None:
     batch = make_update_batch(config.batch_size, obs_dim, action_dim, config.horizon_length)
     batch["base_actions"] = np.full((config.batch_size, config.horizon_length, action_dim), 0.2, dtype=np.float32)
     batch["next_base_actions"] = np.full((config.batch_size, config.horizon_length, action_dim), 0.1, dtype=np.float32)
+    agent, critic_info = agent.update_critic_only(batch)
+    assert np.isfinite(float(critic_info["critic/critic_loss"]))
+    assert float(critic_info["actor/update_actor"]) == 0.0
     agent, info = agent.update(batch)
 
     residual_obs = jnp.zeros((1, obs_dim + action_dim), dtype=jnp.float32)
@@ -1162,6 +1214,8 @@ def main() -> None:
     print("gate/replay smoke ok")
     smoke_base_action_chunk_queue()
     print("base action chunk queue smoke ok")
+    smoke_residual_base_noise_warmup()
+    print("residual base+noise warmup smoke ok")
     smoke_config_sequence_length_semantics()
     print("config sequence length semantics smoke ok")
     smoke_expert_query_semantics()

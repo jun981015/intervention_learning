@@ -182,7 +182,7 @@ def _new_actor_to_legacy(actor: dict[str, Any]) -> dict[str, Any]:
 
 def _first_sampling_spec(sampling: dict[str, Any], *, learner_kind: str | None = None) -> tuple[str, dict[str, Any]]:
     """Return the primary named sampling spec used by the current v0 train loop."""
-    if learner_kind in {"rlpd", "residual_rlpd", "acrlpd", "sac"} and "rl" in sampling:
+    if learner_kind in {"rlpd", "residual_rlpd", "residual_td3", "acrlpd", "sac", "td3"} and "rl" in sampling:
         return "rl", sampling["rl"]
     if "bc" in sampling:
         return "bc", sampling["bc"]
@@ -258,6 +258,7 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
         "eval_interval": int(evaluation.get("interval", 0)),
         "eval_episodes": int(evaluation.get("episodes", 0)),
         "save_interval": int(checkpointing.get("interval", 0)),
+        "save_replay": bool(checkpointing.get("save_replay", True)),
     }
 
     recipe["learner"] = _new_actor_to_legacy(actors["learner"])
@@ -278,6 +279,9 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
     }
     if training.get("action_composition") == "residual":
         recipe["rollout"]["execute"] = "residual"
+    for key in ("residual_warmup_steps", "warmup_noise_scale", "random_action_noise_scale", "use_base_policy_for_warmup"):
+        if key in training:
+            recipe["rollout"][key] = copy.deepcopy(training[key])
     if intervention_enabled:
         recipe["rollout"]["execute"] = "gate"
         recipe["rollout"]["sample_expert"] = expert_query == "always"
@@ -313,6 +317,9 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
         "batch_size": batch_size,
         "sequence_length": int(sampling.get("sequence_length", recipe["learner"]["config"].get("td_n_step", 1))),
     }
+    for key in ("utd_ratio", "utd", "critic_warmup_steps", "update_actor"):
+        if key in sampling:
+            update_spec[key] = copy.deepcopy(sampling[key])
     target_action_key = recipe["learner"]["config"].get("target_action_key")
     if target_action_key is not None:
         update_spec["target_action_key"] = target_action_key

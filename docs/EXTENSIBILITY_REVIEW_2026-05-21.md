@@ -272,17 +272,17 @@ if name == "expert" and not spec.get("pretrained_path"):
 현재 동작:
 
 - 마지막 checkpoint는 항상 저장.
-- replay buffer도 항상 저장.
-- `save_final`, `save_replay`, `keep_last`는 아직 반영되지 않는다.
+- replay buffer는 `checkpointing.save_replay`가 true일 때만 저장한다.
+- `save_final`, `keep_last`는 아직 반영되지 않는다.
 
 영향:
 
-- 긴 실험에서 저장 용량 제어가 어렵다.
+- `save_replay: false`로 긴 실험의 replay 저장 용량을 줄일 수 있다.
 
 판단:
 
-- 빠른 smoke에는 문제 없다.
-- 실제 long run 전에는 반영하는 게 좋다.
+- `save_replay`는 반영됐다.
+- `save_final`, `keep_last`는 실제 long run 전 추가 검토가 필요하다.
 
 ## Logging 관련 지점
 

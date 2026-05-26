@@ -242,6 +242,38 @@ def _select_executed_action(
     return np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
 
 
+def _residual_warmup_output(context: TrainContext, base_action: np.ndarray, *, rng, residual_scale: float, step: int) -> PolicyOutput | None:
+    """Return a random residual warmup action, or None when warmup is inactive."""
+    rollout_cfg = context.config["rollout"]
+    warmup_steps = int(rollout_cfg.get("residual_warmup_steps", 0))
+    if warmup_steps <= 0 or step > warmup_steps:
+        return None
+
+    noise_scale = float(rollout_cfg.get("warmup_noise_scale", rollout_cfg.get("random_action_noise_scale", 0.2)))
+    use_base_policy = bool(rollout_cfg.get("use_base_policy_for_warmup", True))
+    noise = np.asarray(
+        jax.random.uniform(rng, (context.action_dim,), minval=-noise_scale, maxval=noise_scale),
+        dtype=np.float32,
+    )
+    if use_base_policy:
+        residual_action = noise
+    else:
+        residual_action = noise - np.asarray(base_action, dtype=np.float32)
+    raw_residual = residual_action / max(residual_scale, 1e-6)
+    return PolicyOutput(
+        action=residual_action.astype(np.float32),
+        log_prob=float("nan"),
+        info={
+            "raw_residual_action": raw_residual.astype(np.float32),
+            "residual_action": residual_action.astype(np.float32),
+            "residual_warmup": 1,
+            "residual_warmup_steps": warmup_steps,
+            "warmup_noise_scale": noise_scale,
+            "use_base_policy_for_warmup": int(use_base_policy),
+        },
+    )
+
+
 def _choose_residual_action(context: TrainContext, observation, *, step: int):
     """Sample base and residual policies, then execute their clipped sum."""
     if context.base is None:
@@ -250,21 +282,32 @@ def _choose_residual_action(context: TrainContext, observation, *, step: int):
     context.rng, base_rng, residual_rng, expert_rng = jax.random.split(context.rng, 4)
 
     base_output = sample_base_action(context, observation, rng=base_rng)
-    residual_obs = residual_policy_observation(policy_obs, base_output.action)
-    raw_residual_output = _sample_actor(
-        context.learner,
-        residual_obs,
-        rng=residual_rng,
-        action_dim=context.action_dim,
-        reason_if_missing="residual_learner_not_sampled",
-    )
-    if np.isnan(raw_residual_output.action).any():
-        raise ValueError("residual learner produced NaN action.")
-
     residual_scale = float(context.learner.config.get("residual_scale", context.config["rollout"].get("residual_scale", 1.0)))
-    raw_residual = np.asarray(raw_residual_output.action, dtype=np.float32)
-    residual_action = raw_residual * residual_scale
     base_action = np.asarray(base_output.action, dtype=np.float32)
+
+    raw_residual_output = _residual_warmup_output(
+        context,
+        base_action,
+        rng=residual_rng,
+        residual_scale=residual_scale,
+        step=step,
+    )
+    if raw_residual_output is None:
+        residual_obs = residual_policy_observation(policy_obs, base_output.action)
+        raw_residual_output = _sample_actor(
+            context.learner,
+            residual_obs,
+            rng=residual_rng,
+            action_dim=context.action_dim,
+            reason_if_missing="residual_learner_not_sampled",
+        )
+        if np.isnan(raw_residual_output.action).any():
+            raise ValueError("residual learner produced NaN action.")
+        raw_residual = np.asarray(raw_residual_output.action, dtype=np.float32)
+        residual_action = raw_residual * residual_scale
+    else:
+        residual_action = np.asarray(raw_residual_output.action, dtype=np.float32)
+        raw_residual = np.asarray(raw_residual_output.info["raw_residual_action"], dtype=np.float32)
     action = np.clip(base_action + residual_action, -1.0, 1.0)
 
     learner_output = PolicyOutput(

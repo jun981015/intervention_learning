@@ -52,6 +52,12 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
             return target_qs.mean(axis=0)
         raise ValueError(f"Unsupported target_q_agg: {self.config['target_q_agg']}")
 
+    @classmethod
+    def actor_distribution_def(cls, actor_base_cls, action_dim, config):
+        """Build the actor distribution module for this agent class."""
+        del config
+        return TanhNormal(actor_base_cls, action_dim)
+
     @jax.jit
     def evaluate_q_heads(self, observations, actions):
         """Evaluate all action-value heads for an arbitrary action proposal."""
@@ -268,7 +274,7 @@ class ACRLPDAgent(flax.struct.PyTreeNode):
             activate_final=True,
             use_layer_norm=config["actor_layer_norm"],
         )
-        actor_def = TanhNormal(actor_base_cls, full_action_dim)
+        actor_def = cls.actor_distribution_def(actor_base_cls, full_action_dim, config)
 
         # Define the dual alpha variable.
         alpha_def = Temperature(config["init_temp"])

@@ -14,11 +14,19 @@ import jax.numpy as jnp
 from il.networks import default_init
 
 
+def output_init(scale: float):
+    """Return the actor output-head initializer, preserving Xavier at scale=1."""
+    if scale == 1.0:
+        return default_init()
+    return nn.initializers.variance_scaling(scale, "fan_avg", "uniform")
+
+
 class Normal(nn.Module):
     """Gaussian policy head with optional tanh squashing."""
 
     base_cls: Type[nn.Module]
     action_dim: int
+    final_fc_init_scale: float = 1.0
     log_std_min: Optional[float] = -20
     log_std_max: Optional[float] = 2
     state_dependent_std: bool = True
@@ -30,11 +38,11 @@ class Normal(nn.Module):
         x = self.base_cls()(inputs, *args, **kwargs)
 
         means = nn.Dense(
-            self.action_dim, kernel_init=default_init(), name="OutputDenseMean"
+            self.action_dim, kernel_init=output_init(self.final_fc_init_scale), name="OutputDenseMean"
         )(x)
         if self.state_dependent_std:
             log_stds = nn.Dense(
-                self.action_dim, kernel_init=default_init(), name="OutputDenseLogStd"
+                self.action_dim, kernel_init=output_init(self.final_fc_init_scale), name="OutputDenseLogStd"
             )(x)
         else:
             log_stds = self.param(

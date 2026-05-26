@@ -1,58 +1,48 @@
-# Real-env smoke for frozen BCFlow base + random-init residual RLPD learner.
-# This checks residual action composition only; it does not run gradient updates.
+# ToolHang PH low-dim online RLPD expert training without actor BC regularization.
+# n-step=5, reward shift=-1, online replay only.
 
 experiment:
-  name: square_residual_real_env_smoke
+  name: tool_hang_rlpd_nobc_online_shiftm1_nstep5_seed0_2m
   seed: 0
-  output_dir: exp/smoke
+  output_dir: exp/runs
   tags:
-    - square
-    - smoke
-    - residual
-    - bcflow_base
-    - rlpd_residual
+    - tool_hang
+    - ph
+    - rlpd
+    - online
+    - nobc
+    - reward_shift_m1
+    - nstep5
 
 env:
   kind: robomimic
-  name: square-mh-low_dim
+  name: tool_hang-ph-low_dim
   observation_mode: lowdim
-  max_episode_steps: 400
+  max_episode_steps: 1000
   render_offscreen: false
   reward_scale: 1.0
-  reward_shift: 0.0
+  reward_shift: -1.0
   build_eval_env: false
   eval_seed_offset: 10000
 
 actors:
-  base:
-    kind: bc_flow
-    trainable: false
-    pretrained_path: exp/pretrained/bcflow_square_top50_actorln_seed0_500k
-    checkpoint_step: 500000
-    policy_view: true
-    network: {}
-    optimization: {}
-    update: {}
-
   learner:
-    kind: residual_rlpd
+    kind: rlpd
     trainable: true
     pretrained_path: null
     checkpoint_step: null
     policy_view: true
     network:
-      actor_hidden_dims: [64, 64]
-      critic_hidden_dims: [64, 64]
+      actor_hidden_dims: [512, 512, 512, 512]
+      critic_hidden_dims: [512, 512, 512, 512]
       actor_layer_norm: true
       critic_layer_norm: true
-      horizon_length: 1
+      horizon_length: 5
       action_chunking: false
       num_qs: 2
-      residual_scale: 0.1
-      residual_action_l2: 0.0
     optimization:
       lr: 3.0e-4
-      batch_size: 16
+      batch_size: 256
       grad_clip_norm: null
     update:
       discount: 0.99
@@ -62,23 +52,18 @@ actors:
       target_entropy_multiplier: 0.5
       init_temp: 1.0
       bc_alpha: 0.0
-      critic_warmup_steps: 10
 
 training:
-  total_steps: 100
-  start_training: 1000000
+  total_steps: 2000000
+  start_training: 1000
   update_interval: 1
-  updates_per_step: 0
+  updates_per_step: 1
   action_mode: first_action
-  action_composition: residual
-  residual_warmup_steps: 5
-  warmup_noise_scale: 0.0
-  use_base_policy_for_warmup: true
   reset_on_done: true
 
 replay:
   buffers:
-    online_size: 1024
+    online_size: 2000000
     demo_size: 16
     intervention_size: 16
   prefill: {}
@@ -89,8 +74,8 @@ replay:
     rl:
       source:
         online: 1.0
-      sequence_length: 1
-      batch_size: 16
+      sequence_length: 5
+      batch_size: 256
       boundary_mode: drop
 
 intervention:
@@ -116,20 +101,24 @@ evaluation:
   action_mode: first_action
 
 logging:
-  stdout_interval: 20
+  stdout_interval: 5000
   csv: true
   jsonl: true
   wandb:
-    enabled: false
+    enabled: true
     project: intervention_learning
-    group: smoke
-    name: square_residual_real_env_smoke_seed0
+    group: tool_hang_rlpd_online
+    name: tool_hang_rlpd_nobc_online_shiftm1_nstep5_seed0_2m
     tags:
-      - smoke
-      - residual
+      - tool_hang
+      - rlpd
+      - online
+      - nobc
+      - reward_shift_m1
+      - nstep5
 
 checkpointing:
-  interval: 0
-  save_final: false
+  interval: 100000
+  save_final: true
   save_replay: true
-  keep_last: 1
+  keep_last: 3
