@@ -6,7 +6,7 @@ import jax
 import numpy as np
 
 from il.builders.types import TrainContext
-from il.loops.rollout import policy_observation, reset_rollout_state, residual_policy_observation, sample_base_action
+from il.loops.rollout import policy_observation, reset_rollout_state, residual_policy_observation, resolve_residual_scale, sample_base_action
 
 
 def evaluate_policy(context: TrainContext, *, step: int) -> dict[str, float]:
@@ -44,7 +44,7 @@ def evaluate_policy(context: TrainContext, *, step: int) -> dict[str, float]:
                     base_output = sample_base_action(context, observation, rng=base_rng)
                     residual_obs = residual_policy_observation(policy_obs, base_output.action)
                     output = context.learner.policy.sample_action(residual_obs, rng=action_rng)
-                    residual_scale = float(context.learner.config.get("residual_scale", 1.0))
+                    residual_scale = resolve_residual_scale(context)
                     action = np.asarray(base_output.action, dtype=np.float32) + residual_scale * np.asarray(output.action, dtype=np.float32)
                     action = np.clip(action, -1.0, 1.0)
                 else:

@@ -23,3 +23,7 @@ class ControllerGate(Protocol):
     ) -> GateDecision:
         """Choose which policy should control the current environment step."""
         ...
+
+    def reset_episode(self) -> None:
+        """Clear any gate state that must not cross episode boundaries."""
+        ...

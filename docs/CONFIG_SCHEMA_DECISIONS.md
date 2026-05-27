@@ -132,6 +132,9 @@ actors:
 training:
   total_steps: 300000
   start_training: 1000
+  initial_collect:
+    unit: steps
+    count: 1000
   update_interval: 1
   updates_per_step: 1
   action_mode: first_action
@@ -140,10 +143,18 @@ training:
 역할:
 
 - 전체 env step 수
-- update 시작 시점
+- update 시작 전 online replay를 얼마나 채울지
 - update 주기
 - env step당 gradient update 수
 - action chunk 실행 방식
+
+`initial_collect`는 online interaction으로 replay를 먼저 채우는 단계다. 이 조건을 만족하기 전에는 env step과 buffer 저장만 하고 gradient update는 하지 않는다.
+
+- `unit: steps`이면 env step 수 기준으로 채운다.
+- `unit: episodes`이면 episode 종료 개수 기준으로 채운다.
+- `initial_collect`가 없으면 기존 config 호환을 위해 `start_training`을 step 단위 collect count로 해석한다.
+- 둘 다 없으면 기본값은 `DEFAULT_RECIPE.train.start_training = 1000` step이다.
+- `start_training`은 legacy alias로 남겨두되, 새 config에서는 `initial_collect`를 명시하는 쪽을 우선한다.
 
 현재 action mode 결정:
 

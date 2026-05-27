@@ -27,7 +27,7 @@ def load_json(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
-def load_bcflow_agent(policy_dir: Path, *, seed: int) -> tuple[BCFlowAgent, dict, dict]:
+def load_bcflow_agent(policy_dir: Path, *, seed: int, checkpoint_step: int | None = None) -> tuple[BCFlowAgent, dict, dict]:
     """Load a BCFlow policy checkpoint from this repo's pretrained layout."""
     config = load_json(policy_dir / "config.json")
     metadata = load_json(policy_dir / "metadata.json")
@@ -36,8 +36,11 @@ def load_bcflow_agent(policy_dir: Path, *, seed: int) -> tuple[BCFlowAgent, dict
     ex_observations = jnp.zeros((1, obs_dim), dtype=jnp.float32)
     ex_actions = jnp.zeros((1, action_dim), dtype=jnp.float32)
     agent = BCFlowAgent.create(seed, ex_observations, ex_actions, dict(config))
-    checkpoint = policy_dir / f"params_{int(metadata['checkpoint_step'])}.pkl"
+    step = int(checkpoint_step if checkpoint_step is not None else metadata["checkpoint_step"])
+    checkpoint = policy_dir / f"params_{step}.pkl"
     agent = restore_agent_with_file(agent, checkpoint)
+    metadata = dict(metadata)
+    metadata["checkpoint_step"] = step
     return agent, config, metadata
 
 
@@ -94,7 +97,7 @@ def main() -> None:
     output_path = Path(args.output_json).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    agent, config, metadata = load_bcflow_agent(policy_dir, seed=args.seed)
+    agent, config, metadata = load_bcflow_agent(policy_dir, seed=args.seed, checkpoint_step=args.checkpoint_step)
     action_dim = int(metadata["action_dim"])
     horizon_length = int(config["horizon_length"] if config["action_chunking"] else 1)
     env = make_robomimic_env(
@@ -154,6 +157,7 @@ def parse_args():
     parser.add_argument("--policy-dir", required=True)
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--checkpoint-step", type=int, default=None)
     parser.add_argument("--output-json", required=True)
     return parser.parse_args()
 

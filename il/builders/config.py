@@ -250,9 +250,21 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
         )
     )
 
+    initial_collect = training.get("initial_collect")
+    if initial_collect is None:
+        initial_collect_unit = "steps"
+        initial_collect_count = int(training.get("start_training", DEFAULT_RECIPE["train"]["start_training"]))
+    else:
+        initial_collect_unit = str(initial_collect.get("unit", "steps"))
+        initial_collect_count = int(
+            initial_collect.get("count", training.get("start_training", DEFAULT_RECIPE["train"]["start_training"]))
+        )
+
     recipe["train"] = {
         "steps": int(training["total_steps"]),
-        "start_training": int(training.get("start_training", 0)),
+        "start_training": int(training.get("start_training", initial_collect_count)),
+        "initial_collect_unit": initial_collect_unit,
+        "initial_collect_count": initial_collect_count,
         "batch_size": batch_size,
         "log_interval": int(logging.get("stdout_interval", DEFAULT_RECIPE["train"]["log_interval"])),
         "eval_interval": int(evaluation.get("interval", 0)),

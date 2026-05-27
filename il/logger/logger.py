@@ -24,6 +24,7 @@ _LAST_VALUE_KEYS = {
     "train/episodes",
     "train/interval_sps",
     "train/total_sps",
+    "train/initial_collect_progress",
     "time/elapsed_seconds",
 }
 

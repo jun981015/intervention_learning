@@ -36,6 +36,29 @@ def _empty_route_metrics() -> dict[str, int]:
     return {key: 0 for key in _ROUTE_METRIC_KEYS}
 
 
+def _resolve_initial_collect(train_cfg: dict) -> tuple[str, int]:
+    """Return the initial online collection condition before updates start."""
+    unit = str(train_cfg.get("initial_collect_unit", "steps"))
+    if unit not in ("steps", "episodes"):
+        raise ValueError("train.initial_collect_unit must be either 'steps' or 'episodes'.")
+    count = train_cfg.get("initial_collect_count")
+    if count is None:
+        count = train_cfg.get("start_training", 0)
+    return unit, max(0, int(count))
+
+
+def _initial_collect_done(unit: str, count: int, *, step: int, episode_count: int) -> bool:
+    """Return whether the online replay prefill phase is complete."""
+    if unit == "steps":
+        return step >= count
+    return episode_count >= count
+
+
+def _initial_collect_progress(unit: str, *, step: int, episode_count: int) -> int:
+    """Return current progress in the configured initial collection unit."""
+    return step if unit == "steps" else episode_count
+
+
 def _make_logger(context: TrainContext) -> MetricLogger:
     """Create the metric logger configured for this run."""
     run_cfg = context.config["run"]
@@ -146,7 +169,7 @@ def run_train_loop(context: TrainContext) -> TrainContext:
     train_cfg = context.config["train"]
     replay_cfg = context.config["replay"]
     steps = int(train_cfg["steps"])
-    start_training = int(train_cfg["start_training"])
+    initial_collect_unit, initial_collect_count = _resolve_initial_collect(train_cfg)
     log_interval = int(train_cfg["log_interval"])
     eval_interval = int(train_cfg.get("eval_interval", 0))
     save_interval = int(train_cfg.get("save_interval", 0))
@@ -155,7 +178,7 @@ def run_train_loop(context: TrainContext) -> TrainContext:
 
     logger = _make_logger(context)
     observation, _ = context.env.reset(options={"seed": int(context.config["run"]["seed"])})
-    reset_rollout_state(context)
+    reset_rollout_state(context, reset_gate=True)
     episode: list[dict] = []
     episode_return = 0.0
     episode_length = 0
@@ -171,7 +194,11 @@ def run_train_loop(context: TrainContext) -> TrainContext:
     start_time = time.time()
     last_log_time = start_time
     last_log_step = 0
-    print(f"[train] starting loop steps={steps} run_dir={context.paths.run_dir}", flush=True)
+    print(
+        f"[train] starting loop steps={steps} initial_collect={initial_collect_count} {initial_collect_unit} "
+        f"run_dir={context.paths.run_dir}",
+        flush=True,
+    )
 
     for step in range(1, steps + 1):
         route_metrics = _empty_route_metrics()
@@ -237,7 +264,7 @@ def run_train_loop(context: TrainContext) -> TrainContext:
             recent_lengths = recent_lengths[-100:]
             recent_successes = recent_successes[-100:]
             observation, _ = context.env.reset()
-            reset_rollout_state(context)
+            reset_rollout_state(context, reset_gate=True)
             episode = []
             episode_return = 0.0
             episode_length = 0
@@ -246,7 +273,13 @@ def run_train_loop(context: TrainContext) -> TrainContext:
             observation = next_observation
 
         step_update_metrics: dict[str, float] = {}
-        if step >= start_training:
+        initial_collect_done = _initial_collect_done(
+            initial_collect_unit,
+            initial_collect_count,
+            step=step,
+            episode_count=episode_count,
+        )
+        if initial_collect_done:
             for update_spec in context.update_specs:
                 try:
                     step_update_metrics.update(run_update_spec(context, update_spec, step=step))
@@ -267,6 +300,11 @@ def run_train_loop(context: TrainContext) -> TrainContext:
             "train/intervention_size": context.buffers.intervention.size,
             "train/episodes": episode_count,
             "train/total_sps": step / max(now - start_time, 1e-6),
+            "train/initial_collect_active": float(not initial_collect_done),
+            "train/initial_collect_count": float(initial_collect_count),
+            "train/initial_collect_progress": float(
+                _initial_collect_progress(initial_collect_unit, step=step, episode_count=episode_count)
+            ),
             "env/recent_return": float(np.mean(recent_returns)) if recent_returns else 0.0,
             "env/recent_length": float(np.mean(recent_lengths)) if recent_lengths else 0.0,
             "env/recent_success_rate": float(np.mean(recent_successes)) if recent_successes else 0.0,
@@ -297,7 +335,7 @@ def run_train_loop(context: TrainContext) -> TrainContext:
             _save_train_state(context, step)
 
     _save_train_state(context, steps)
-    if bool(context.recipe.train.get("save_replay", True)):
+    if bool(context.config["train"].get("save_replay", True)):
         _save_buffers(context)
     logger.close()
     print(f"[train] finished run_dir={context.paths.run_dir}", flush=True)

@@ -41,6 +41,11 @@ class ExpertQGapGate:
         if self.q_agg not in ("min", "mean", "max"):
             raise ValueError("q_agg must be one of {'min', 'mean', 'max'}.")
 
+    def reset_episode(self) -> None:
+        """Drop sticky intervention state at an episode boundary."""
+        self._remaining_steps = 0
+        self._last_info = {}
+
     def _agent_config_get(self, expert_agent: Any, key: str, default: Any) -> Any:
         """Read an optional config key without assuming a concrete agent class."""
         config = getattr(expert_agent, "config", None)

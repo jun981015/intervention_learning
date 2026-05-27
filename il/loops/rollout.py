@@ -28,6 +28,11 @@ def residual_policy_observation(policy_obs, base_action: np.ndarray) -> np.ndarr
     return np.concatenate([state, base], axis=-1).astype(np.float32)
 
 
+def resolve_residual_scale(context: TrainContext) -> float:
+    """Return the residual action scale used consistently by train and eval."""
+    return float(context.learner.config.get("residual_scale", context.config["rollout"].get("residual_scale", 1.0)))
+
+
 def _missing_policy_output(action_dim: int, *, reason: str) -> PolicyOutput:
     """Return a NaN action placeholder when a proposal is intentionally absent."""
     return PolicyOutput(
@@ -58,9 +63,11 @@ def _rollout_state(context: TrainContext) -> dict[str, Any]:
     return context.rollout_state
 
 
-def reset_rollout_state(context: TrainContext) -> None:
-    """Clear per-episode rollout caches such as action queues."""
+def reset_rollout_state(context: TrainContext, *, reset_gate: bool = False) -> None:
+    """Clear per-episode rollout caches, and optionally gate state."""
     _rollout_state(context).clear()
+    if reset_gate and context.gate is not None:
+        context.gate.reset_episode()
 
 
 def _base_action_queue(context: TrainContext):
@@ -282,7 +289,7 @@ def _choose_residual_action(context: TrainContext, observation, *, step: int):
     context.rng, base_rng, residual_rng, expert_rng = jax.random.split(context.rng, 4)
 
     base_output = sample_base_action(context, observation, rng=base_rng)
-    residual_scale = float(context.learner.config.get("residual_scale", context.config["rollout"].get("residual_scale", 1.0)))
+    residual_scale = resolve_residual_scale(context)
     base_action = np.asarray(base_output.action, dtype=np.float32)
 
     raw_residual_output = _residual_warmup_output(
