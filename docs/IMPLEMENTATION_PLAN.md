@@ -1,5 +1,18 @@
 # 구현 계획과 검증 상태
 
+
+## 현재 상태 업데이트 — 2026-05-27
+
+이 문서는 초기 구현 계획의 기록을 포함한다. 현재 작업 우선순위와 최신 TODO는
+[IMPLEMENTATION_TODO.md](IMPLEMENTATION_TODO.md)를 기준으로 본다. 실제 env smoke 결과는
+[REAL_ENV_SMOKE_TESTS.md](REAL_ENV_SMOKE_TESTS.md)를 보고, 2026-05-26 코드 리뷰 후속은
+[CODE_REVIEW_2026-05-26.md](CODE_REVIEW_2026-05-26.md)의 현재 해결 상태 표를 본다.
+
+초기 계획 중 Robomimic env construction, recipe-driven `il.train` entrypoint, DAgger relabel real-env
+smoke, expert-Q gap real-env smoke, residual RLPD/TD3 path는 이미 구현 또는 smoke 검증이 진행됐다.
+남은 작업은 replay round-trip, dataset adapter/canonicalization, gate abstraction 정리, update/checkpoint
+config 반영, action chunk queue, image policy 학습 쪽이다.
+
 ## 완료된 Scaffold
 
 - Project scaffold와 replay schema를 만들었다.
@@ -40,20 +53,22 @@ bc flow policy checkpoint smoke ok
 
 ## 다음 구현 순서
 
-1. Robomimic Square environment construction을 추가한다.
-2. Fresh learner 또는 restored learner + restored expert + random gate로 100 step online rollout smoke를 통과시킨다.
-3. replay 저장 파일에 learner/expert/action/gate metadata가 모두 들어가는지 검증한다.
-4. No-intervention RLPD baseline을 재현한다.
-5. Random intervention baseline을 돌린다.
-6. demo/intervention buffer에서 BC loss를 learner update에 추가한다.
-7. 그 다음에 smarter gating, human UI, action chunking을 붙인다.
+최신 순서는 [IMPLEMENTATION_TODO.md](IMPLEMENTATION_TODO.md)를 따른다. 현재 기준으로 우선순위가 높은
+작업은 다음이다.
+
+1. `CODE_REVIEW_2026-05-26.md`의 남은 P0/P1 항목을 작은 단위로 처리한다.
+2. offline demo/prefill dataset adapter와 canonicalization interface를 추가한다.
+3. replay save/load round-trip test를 실제 env 산출물까지 포함해 보강한다.
+4. DAgger update-on smoke와 residual large config runtime을 검증한다.
+5. 새 gate family를 추가하기 전에 `ControllerGate` runtime contract와 필요 시 `GateContext`를 정리한다.
 
 ## 아직 안 된 것
 
-- 실제 Robomimic env에서 online rollout이 도는지 확인
 - replay buffer save/load round-trip test
-- online training loop CLI
-- demo/intervention BC loss가 learner update에 들어가는 경로
+- dataset adapter / canonicalization interface
+- `update_interval`, `updates_per_step`, `save_final`, `keep_last` 등 일부 public config field의 runtime 반영
+- learner/expert 일반 action chunk queue
+- image observation policy/network 학습 경로
 
 ## Git 운영
 

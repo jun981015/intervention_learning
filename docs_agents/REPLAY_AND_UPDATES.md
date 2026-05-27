@@ -20,8 +20,16 @@ Required fields:
 - `learner_action_log_probs`
 - `expert_action_log_probs`
 - `interventions`
+- `base_actions`
+- `residual_actions`
+- `next_base_actions`
 
 `actions` is always the action actually executed in the environment.
+
+For residual policies, `actions` is the combined executed action
+`clip(base_actions + residual_actions)`. `base_actions` and
+`next_base_actions` must be finite for residual RL updates. Non-residual
+transitions may keep these residual metadata fields as NaN placeholders.
 
 `episode_ids` identifies the episode containing the transition, and
 `episode_steps` is the 0-based step index within that episode. Image replay uses
@@ -183,6 +191,7 @@ replay:
       path: /path/to/demo_replay.npz
       format: npz
       max_transitions: 100000  # optional
+      cache_base_actions: true  # optional, residual RL only; requires actors.base
 ```
 
 `prefill` can target any physical buffer: `online`, `intervention`, or `demo`.
@@ -194,6 +203,19 @@ is also accepted.
 Image replay is restored from the same `.npz` format. Keys such as
 `image_observations/<camera>` are restored into `ReplayBuffer.image_data[camera]`,
 and sampling reconstructs next images from the `i+1` frame.
+
+
+For residual RL, `cache_base_actions: true` runs the frozen `actors.base` policy
+over the prefilled observations and fills `base_actions`, `next_base_actions`,
+and diagnostic `residual_actions`. This can be expensive on large datasets and
+must stay opt-in.
+
+High-priority TODO: add explicit dataset adapters / canonicalization. Offline
+demo sources do not all give `actions` the same meaning. The loader should not
+silently copy `actions` into `expert_actions` unless an adapter such as
+`demo_actions_are_expert` states that semantic explicitly. Schema-compatible
+saved replay should use a separate `replay_npz`-style adapter that preserves the
+saved fields as-is.
 
 ## Demo Episode Insert Mode
 

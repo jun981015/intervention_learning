@@ -18,7 +18,7 @@
 - expert와 learner는 같은 policy/algorithm interface를 공유한다.
 - 매 step learner action과 expert action을 둘 다 뽑아서 저장한다.
 - gating function은 어떤 controller를 실행할지 결정한다.
-- 초기 gating은 random probability gate로만 테스트한다.
+- 초기 gating smoke는 random probability gate로 시작했고, 현재는 expert-Q gap intervention gate도 포함한다.
 - 초기 expert baseline은 RLPD checkpoint를 load한 policy로 둔다.
 - diffusion/flow-matching weight는 나중에 BC actor 또는 expert 후보로 쓸 수 있게 둔다.
 - grad clipping은 기본적으로 끈다. 필요한 실험에서만 `grad_clip_norm`을 명시한다.
@@ -46,11 +46,11 @@
 - OGBench/cube tasks
 - Human keyboard/UI intervention
 - Action chunking support
-- Q/uncertainty/disagreement 기반 smart gate
+- Q/uncertainty/disagreement 기반 새 gate family는 별도 설계 후 추가한다.
 
 ## 현재 Scaffold
 
-- `il/gating/`: controller gate interface와 random gate
+- `il/gating/`: controller gate interface, random gate, expert-Q gap gate
 - `il/policies/`: learner/expert가 공유하는 minimal policy protocol
 - `il/buffers/`: replay buffer, transition schema, episode routing
 - `il/datasets/`: offline dataset loader와 transform용 예약 폴더
@@ -60,5 +60,7 @@
 - `il/networks/`: qc_base에서 가져온 network block
 - `il/distributions/`: action distribution head
 - `il/utils/`: shared dataclass, config, Flax train state, UTD sampling
-- `il/loops/`: single-step action selection helper
-- `il/train.py`: 아직 연결 전인 placeholder entrypoint
+- `il/loops/`: rollout action selection, train loop, update runner
+- `il/evaluation/`: learner-only evaluation helper
+- `il/logger/`: interval metric logger
+- `il/train.py`: recipe 기반 train/build entrypoint

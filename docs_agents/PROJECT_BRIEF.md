@@ -21,6 +21,7 @@ metadata.
 - Replay schema, n-step backup, UTD, and target Q aggregation: [REPLAY_AND_UPDATES.md](REPLAY_AND_UPDATES.md)
 - Network defaults and MLP option policy: [NETWORKS.md](NETWORKS.md)
 - Completed work, validation commands, and next implementation steps: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
+- Active code-review follow-up: [CODE_REVIEW_2026-05-26.md](CODE_REVIEW_2026-05-26.md)
 - Environment setup: [INSTALL.md](INSTALL.md)
 
 ## Collaboration Protocol
@@ -45,10 +46,13 @@ without explicit user confirmation.
 ## Current Status
 
 Simulator-free intervention data flow is verified by `scripts/smoke_test.py`.
-The current smoke covers gate/replay, intervention routing, mixed replay
-sampling, RLPD update, RLPD checkpoint policy loading, BC MLP update, BC Flow
-update, and BC Flow checkpoint policy loading.
+The current code has a recipe-driven `python -m il.train` entrypoint, real
+Robomimic Square smoke coverage for DAgger relabeling and `expert_q_gap`, and
+residual RLPD/TD3 rollout/update paths. Simulator-free smoke still covers
+gate/replay, intervention routing, mixed replay sampling, RLPD, BC MLP, and BC
+Flow update paths.
 
-The next blocker is real Robomimic online rollout support. Follow
-[IMPLEMENTATION_PLAN.md#next-implementation-steps](IMPLEMENTATION_PLAN.md#next-implementation-steps)
-for the next tasks.
+The active work is no longer basic env wiring. Treat
+`docs/CODE_REVIEW_2026-05-26.md` and the agent-facing
+`CODE_REVIEW_2026-05-26.md` as the current code-quality backlog, and
+`docs/IMPLEMENTATION_TODO.md` as the broader project backlog.

@@ -17,6 +17,8 @@
 - `JAX_FLAX_GUIDE.md`: Torch 사용자 관점에서 보는 JAX/Flax, `TrainState`, gradient 흐름
 - `LOGGING_AND_METRICS.md`: interval 평균 로깅 방식과 추가 metric TODO
 - `REAL_ENV_SMOKE_TESTS.md`: 실제 Robomimic env에서 돌린 smoke test 명령과 결과
+- `CODE_REVIEW_2026-05-26.md`: `il/` 전체 코드 리뷰 finding과 2026-05-27 기준 해결/미해결 상태
+- `RUN_FAILURE_LOG.md`: 실행 실패와 원인/후속 조치 기록
 - `RESIDUAL_POLICY_ANALYSIS.md`: ResFiT residual policy 분석과 우리 레포 통합 설계 메모
 - `EXTENSIBILITY_REVIEW_2026-05-21.md`: 현재 hardcoded default/prefix와 확장성 리스크 점검
 - `IMPLEMENTATION_PLAN.md`: 구현 순서와 검증 상태

@@ -1,5 +1,18 @@
 # Implementation Plan
 
+
+## Current Status Update - 2026-05-27
+
+This file preserves the early implementation plan. For current work, use:
+
+- `docs/IMPLEMENTATION_TODO.md` for the broader backlog.
+- `docs/REAL_ENV_SMOKE_TESTS.md` for real Robomimic smoke results.
+- `docs/CODE_REVIEW_2026-05-26.md` and `docs_agents/CODE_REVIEW_2026-05-26.md` for the active code-review follow-up.
+
+The original Robomimic env wiring, recipe-driven `il.train` entrypoint, DAgger
+relabel real-env smoke, expert-Q gap real-env smoke, and residual RLPD/TD3 paths
+are no longer pending scaffold tasks.
+
 ## Completed Scaffold
 
 - Project scaffold and replay schema.
@@ -40,17 +53,16 @@ bc flow policy checkpoint smoke ok
 
 ## Next Implementation Steps
 
-1. Add Robomimic Square environment construction.
-2. Run a 100-step online rollout smoke with fresh or restored learner, restored expert, and random gate.
-3. Verify saved replay contains learner/expert/executed actions and gate metadata.
-4. Reproduce no-intervention RLPD baseline.
-5. Run random-intervention baseline.
-6. Add BC losses from `demo_buffer` and `intervention_buffer`.
-7. Then add smarter gating, human UI, and action chunking.
+1. Address the remaining open items from `CODE_REVIEW_2026-05-26.md`, starting with gate runtime contract cleanup and the buffer-underfilled exception class.
+2. Add explicit dataset adapters for offline demo/prefill canonicalization.
+3. Add replay save/load round-trip tests, including real-env generated replay files.
+4. Run DAgger update-on smoke and residual large-config runtime checks.
+5. Before adding a new gate family, decide whether the current `ControllerGate` Protocol is enough or whether the new gate needs a `GateContext`.
 
 ## Pending Risks
 
-- Real Robomimic env rollout is not wired yet.
+- `RandomGate` does not currently implement `reset_episode()` even though the train loop calls it through the gate contract.
 - Replay save/load round-trip test is missing.
-- Online training loop CLI is still a placeholder.
-- Demo/intervention BC losses are not yet connected to learner updates.
+- Dataset semantics are still partly implicit in the Robomimic prefill loader.
+- Some public config fields are not fully consumed at runtime: `update_interval`, `updates_per_step`, `save_final`, `keep_last`, eval video fields, and `storage.store_*`.
+- General learner/expert action chunk queues are not implemented.

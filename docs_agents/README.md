@@ -21,6 +21,7 @@ code work.
 - `JAX_FLAX_GUIDE.md`: JAX/Flax mental model, `TrainState`, and gradient-flow rules for agents.
 - `LOGGING_AND_METRICS.md`: Interval logging behavior and next metric TODOs.
 - `EXTENSIBILITY_REVIEW_2026-05-21.md`: Hardcoded defaults/prefixes and extensibility risks.
+- `CODE_REVIEW_2026-05-26.md`: Current code-review findings, resolved/open status, and next coding order.
 - `IMPLEMENTATION_PLAN.md`: Completed work, validation commands, next steps, and pending risks.
 
 ## Agent Rules
@@ -28,7 +29,7 @@ code work.
 - Treat `/home/junhyeong/repos/qc` and `/home/junhyeong/repos/qc_base` as references only.
 - Do not merge full QC-FQL, FQL, or BT logic into this project unless explicitly requested.
 - Diffusion/flow-matching code is allowed only as a BC policy component.
-- Keep the v0 pipeline simple: Robomimic Square, RLPD/SAC learner, RLPD/SAC checkpoint expert, random gating, `horizon_length=1`.
+- Keep the v0 pipeline simple: Robomimic Square, RLPD/SAC or BCFlow learner, RLPD/SAC checkpoint expert, random gate plus `expert_q_gap`, `horizon_length=1` by default.
 - Preserve the separation between learner action, expert action, and executed action in replay.
 - Do not commit generated logs, videos, replay buffers, checkpoints, W&B files, or experiment outputs.
 - Keep `PROJECT_BRIEF.md` as a short navigation page. Put detailed notes in task-specific docs.
