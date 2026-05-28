@@ -38,10 +38,16 @@ DEFAULT_RECIPE: dict[str, Any] = {
         "steps": 300_000,
         "start_training": 1_000,
         "batch_size": 256,
+        "update_interval": 1,
+        "updates_per_step": 1,
         "log_interval": 5_000,
         "eval_interval": 50_000,
         "eval_episodes": 10,
+        "eval_render_video": False,
+        "eval_video_episodes": 0,
+        "eval_video_frame_skip": 1,
         "save_interval": 100_000,
+        "save_final": True,
     },
     "learner": {
         "kind": "bc_flow",
@@ -259,6 +265,8 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
         initial_collect_count = int(
             initial_collect.get("count", training.get("start_training", DEFAULT_RECIPE["train"]["start_training"]))
         )
+    if initial_collect_unit not in ("steps", "episodes"):
+        raise ValueError("training.initial_collect.unit must be either \"steps\" or \"episodes\".")
 
     recipe["train"] = {
         "steps": int(training["total_steps"]),
@@ -266,10 +274,16 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
         "initial_collect_unit": initial_collect_unit,
         "initial_collect_count": initial_collect_count,
         "batch_size": batch_size,
+        "update_interval": int(training.get("update_interval", DEFAULT_RECIPE["train"]["update_interval"])),
+        "updates_per_step": int(training.get("updates_per_step", DEFAULT_RECIPE["train"]["updates_per_step"])),
         "log_interval": int(logging.get("stdout_interval", DEFAULT_RECIPE["train"]["log_interval"])),
         "eval_interval": int(evaluation.get("interval", 0)),
         "eval_episodes": int(evaluation.get("episodes", 0)),
+        "eval_render_video": bool(evaluation.get("render_video", False)),
+        "eval_video_episodes": int(evaluation.get("video_episodes", 0)),
+        "eval_video_frame_skip": int(evaluation.get("video_frame_skip", 1)),
         "save_interval": int(checkpointing.get("interval", 0)),
+        "save_final": bool(checkpointing.get("save_final", True)),
         "save_replay": bool(checkpointing.get("save_replay", True)),
     }
 

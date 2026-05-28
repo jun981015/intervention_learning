@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 
+from il.gating.base import ControllerGate
+
 
 @dataclass(frozen=True)
 class RunPaths:
@@ -59,7 +61,7 @@ class TrainContext:
     base: ActorBundle | None
     expert: ActorBundle | None
     buffers: Any
-    gate: Any | None
+    gate: ControllerGate | None
     rng: Any
     gate_rng: np.random.Generator
     update_specs: list[dict[str, Any]]

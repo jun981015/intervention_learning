@@ -16,7 +16,7 @@ from il.buffers import (
     make_replay_example,
 )
 from il.builders.types import ActorBundle, EnvSpec
-from il.gating import ExpertQGapGate, RandomGate
+from il.gating import ControllerGate, ExpertQGapGate, RandomGate
 from il.loops.rollout import prepare_next_base_action, reset_rollout_state, sample_base_action
 
 
@@ -107,8 +107,11 @@ def build_envs(config: dict[str, Any]):
     env = make_env(env_cfg, seed=seed)
     eval_env = None
     if bool(env_cfg.get("build_eval_env", True)) and int(config["train"].get("eval_interval", 0)) > 0:
+        eval_env_cfg = dict(env_cfg)
+        if bool(config["train"].get("eval_render_video", False)) and int(config["train"].get("eval_video_episodes", 0)) > 0:
+            eval_env_cfg["render_offscreen"] = True
         eval_env = make_env(
-            env_cfg,
+            eval_env_cfg,
             seed=seed + int(env_cfg.get("eval_seed_offset", 10_000)),
         )
     return env, eval_env
@@ -216,19 +219,28 @@ def build_buffers(config: dict[str, Any], *, env_spec: EnvSpec, base_actor: Acto
     )
 
 
-def build_gate(config: dict[str, Any]):
+def _validate_gate(gate: object) -> ControllerGate:
+    """Validate that a built gate satisfies the runtime gate contract."""
+    if not isinstance(gate, ControllerGate):
+        raise TypeError(f"Gate {type(gate).__name__} does not satisfy ControllerGate.")
+    return gate
+
+
+def build_gate(config: dict[str, Any]) -> ControllerGate | None:
     """Build optional gate function."""
     gate_cfg = config["gate"]
     kind = gate_cfg.get("kind", "none")
     if kind in ("none", None):
         return None
     if kind == "random":
-        return RandomGate(expert_probability=float(gate_cfg["expert_probability"]))
+        return _validate_gate(RandomGate(expert_probability=float(gate_cfg["expert_probability"])))
     if kind == "expert_q_gap":
-        return ExpertQGapGate(
-            threshold=float(gate_cfg["threshold"]),
-            intervention_prob=float(gate_cfg.get("intervention_prob", 1.0)),
-            intervention_horizon=int(gate_cfg.get("intervention_horizon", 1)),
-            q_agg=str(gate_cfg.get("q_agg", "min")),
+        return _validate_gate(
+            ExpertQGapGate(
+                threshold=float(gate_cfg["threshold"]),
+                intervention_prob=float(gate_cfg.get("intervention_prob", 1.0)),
+                intervention_horizon=int(gate_cfg.get("intervention_horizon", 1)),
+                q_agg=str(gate_cfg.get("q_agg", "min")),
+            )
         )
     raise ValueError(f"Unsupported gate kind: {kind!r}")

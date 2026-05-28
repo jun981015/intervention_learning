@@ -98,7 +98,10 @@ class ResidualTD3Agent(ResidualRLPDAgent):
 
         q = self.network.select("critic")(observations, batch_actions, params=grad_params)
         td_error = q - target_q
-        critic_loss = (jnp.square(td_error) * batch["valid"][..., -1]).mean()
+        valid = batch["valid"][..., -1]
+        squared_error = jnp.square(td_error) * valid
+        normalizer = jnp.maximum(jnp.sum(valid) * q.shape[0], 1.0)
+        critic_loss = jnp.sum(squared_error) / normalizer
 
         return critic_loss, {
             "critic_loss": critic_loss,

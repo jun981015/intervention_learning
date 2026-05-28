@@ -46,12 +46,15 @@ def build_context(config: dict) -> TrainContext:
     )
 
     rollout_execute = config["rollout"].get("execute", "learner")
+    residual_composition = (
+        config["rollout"].get("action_composition") == "residual" or rollout_execute == "residual"
+    )
 
     base_spec = config.get("base")
     base = None
-    if rollout_execute == "residual":
+    if residual_composition:
         if base_spec is None:
-            raise ValueError("rollout.execute='residual' requires actors.base in the config.")
+            raise ValueError("residual action composition requires actors.base in the config.")
         base = build_actor_bundle(
             name="base",
             spec=base_spec,

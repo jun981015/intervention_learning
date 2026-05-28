@@ -39,11 +39,13 @@ actor는 residual `delta`만 출력하고, critic은 실제 실행 action `a_exe
 - residual rollout에서 base+noise warmup을 지원한다.
 - residual actor output head를 작게 초기화하는 `actor_final_fc_init_scale`을 지원한다.
 - `residual_td3`를 추가했다. deterministic residual actor, target actor, target policy smoothing, delayed actor update, UTD=4 config path를 지원한다.
+- residual action composition과 intervention gate를 함께 쓸 수 있게 연결했다. gate는 full learner action `clip(base + residual)`을 보고, replay는 expert 선택 step에서도 residual metadata를 저장한다.
 
 남은 우선순위:
 
 - 실제 large Robomimic/ToolHang demo prefill에서 `cache_base_actions` runtime과 메모리 비용을 측정한다.
 - residual BC regularization / pretraining은 code-level smoke를 통과했다. 다음은 실제 실험 config에서 성능과 runtime을 검증한다.
+- residual+intervention gate 조합은 더미 rollout smoke를 통과했다. 다음은 실제 env config에서 build-only와 짧은 rollout을 검증한다.
 - learner/expert 일반 action chunk queue와 vector env별 queue를 설계한다.
 - ActionScaler는 Robomimic `[-1, 1]` action clip 밖의 task가 필요해질 때 추가한다.
 - PER와 large Q ensemble은 residual 구현 검증 후 안정화 옵션으로 미룬다.
@@ -231,7 +233,8 @@ env와 replay는 image observation 저장을 지원하지만, actor/critic netwo
 
 현재 정리:
 
-- env wrapper는 `lowdim`, `pixels`, `pixels_state` observation mode와 multi-camera render를 지원한다.
+- env wrapper는 `lowdim`, `state`, `pixels`, `pixels_state` observation mode와 multi-camera render를 지원한다.
+- `state`는 `{"state": ...}` dict observation을 반환하는 state-only mode다. 다음 TODO는 eval/video path부터 이 mode를 우선 사용해 full observation tree access pattern을 굳히는 것이다.
 - replay buffer는 image leaf를 별도 저장하고, sample 시 `i+1` frame으로 `next_observations` image를 복원한다.
 - 여기까지는 "image input을 받을 수 있는 env/replay 인프라" 단계다.
 - policy/network가 image를 어떻게 쓸지는 아직 정하지 않았다.

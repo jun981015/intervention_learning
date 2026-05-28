@@ -68,6 +68,9 @@ Reward transform:
 현재 image 관련 결정:
 
 - env wrapper와 replay는 image input을 받을 준비를 한다.
+- `observation_mode: lowdim`은 기존 호환용 array state observation이다.
+- `observation_mode: state`는 `{"state": ...}` dict observation으로, image key를 나중에 추가해도 buffer/policy access pattern을 덜 바꾸기 위한 state-only mode다.
+- `observation_mode: pixels_state`는 같은 dict 구조에 camera image leaf를 추가한다.
 - policy/network가 image를 어떻게 쓸지는 아직 결정하지 않았다.
 - 당장 train은 low-dim state policy 기준으로 진행한다.
 - image policy 학습은 별도 설계 후 붙인다.
@@ -133,7 +136,7 @@ training:
   total_steps: 300000
   start_training: 1000
   initial_collect:
-    unit: steps
+    unit: steps  # steps | episodes
     count: 1000
   update_interval: 1
   updates_per_step: 1
@@ -371,6 +374,8 @@ evaluation:
 - eval episode 수
 - eval seed
 - video 저장 여부
+- `render_video: true`와 `video_episodes > 0`이면 evaluator가 metric episode 뒤에 별도 video episode를 굴리고 `env.render()` frame을 mp4로 저장한다. 이 video episode는 eval 통계에 포함하지 않는다.
+- video 저장을 요청했는데 env가 `render()`를 제공하지 않으면 runtime error를 낸다. Robomimic eval env는 video 요청 시 offscreen render가 켜진 eval env로 만든다.
 - success/return/length metric 생성
 
 ### `logging`

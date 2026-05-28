@@ -19,6 +19,10 @@ class RandomGate:
         if not 0.0 <= self.expert_probability <= 1.0:
             raise ValueError("expert_probability must be in [0, 1].")
 
+    def reset_episode(self) -> None:
+        """No-op hook for the shared gate episode lifecycle."""
+        return None
+
     def decide(
         self,
         *,

@@ -88,7 +88,10 @@ class ResidualRLPDAgent(ACRLPDAgent):
         target_q = batch["rewards"][..., -1] + (self.config["discount"] ** td_n_step) * batch["masks"][..., -1] * next_q
 
         q = self.network.select("critic")(observations, batch_actions, params=grad_params)
-        critic_loss = (jnp.square(q - target_q) * batch["valid"][..., -1]).mean()
+        valid = batch["valid"][..., -1]
+        squared_error = jnp.square(q - target_q) * valid
+        normalizer = jnp.maximum(jnp.sum(valid) * q.shape[0], 1.0)
+        critic_loss = jnp.sum(squared_error) / normalizer
 
         return critic_loss, {
             "critic_loss": critic_loss,

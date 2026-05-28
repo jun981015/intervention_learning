@@ -33,6 +33,12 @@ def resolve_residual_scale(context: TrainContext) -> float:
     return float(context.learner.config.get("residual_scale", context.config["rollout"].get("residual_scale", 1.0)))
 
 
+def uses_residual_composition(context: TrainContext) -> bool:
+    """Return whether learner actions are composed as base plus residual."""
+    rollout_cfg = context.config["rollout"]
+    return rollout_cfg.get("action_composition") == "residual" or rollout_cfg.get("execute") == "residual"
+
+
 def _missing_policy_output(action_dim: int, *, reason: str) -> PolicyOutput:
     """Return a NaN action placeholder when a proposal is intentionally absent."""
     return PolicyOutput(
@@ -170,27 +176,38 @@ def _fixed_decision(controller_id: ControllerId, *, reason: str) -> GateDecision
 
 def _sample_action_proposals(
     context: TrainContext,
+    observation,
     policy_obs,
     *,
     rollout_cfg: dict[str, Any],
     execute: str,
+    step: int,
 ) -> tuple[PolicyOutput, PolicyOutput]:
     """Sample learner and expert proposals for the current state."""
     context.rng, learner_rng, expert_rng = jax.random.split(context.rng, 3)
     sample_learner = bool(rollout_cfg.get("sample_learner", True)) or execute in ("learner", "gate")
     sample_expert = bool(rollout_cfg.get("sample_expert", False)) or execute in ("expert", "gate")
 
-    learner_output = (
-        _sample_actor(
+    if not sample_learner:
+        learner_output = _missing_policy_output(context.action_dim, reason="learner_not_sampled")
+    elif uses_residual_composition(context):
+        learner_rng, base_rng, residual_rng = jax.random.split(learner_rng, 3)
+        learner_output = _sample_residual_learner_proposal(
+            context,
+            observation,
+            policy_obs,
+            step=step,
+            base_rng=base_rng,
+            residual_rng=residual_rng,
+        )
+    else:
+        learner_output = _sample_actor(
             context.learner,
             policy_obs,
             rng=learner_rng,
             action_dim=context.action_dim,
             reason_if_missing="learner_not_sampled",
         )
-        if sample_learner
-        else _missing_policy_output(context.action_dim, reason="learner_not_sampled")
-    )
     expert_output = (
         _sample_actor(
             context.expert,
@@ -281,12 +298,18 @@ def _residual_warmup_output(context: TrainContext, base_action: np.ndarray, *, r
     )
 
 
-def _choose_residual_action(context: TrainContext, observation, *, step: int):
-    """Sample base and residual policies, then execute their clipped sum."""
+def _sample_residual_learner_proposal(
+    context: TrainContext,
+    observation,
+    policy_obs,
+    *,
+    step: int,
+    base_rng,
+    residual_rng,
+) -> PolicyOutput:
+    """Return the learner's full residual-composed action proposal."""
     if context.base is None:
-        raise ValueError("rollout.execute='residual' requires a built base actor.")
-    policy_obs = policy_observation(observation, context)
-    context.rng, base_rng, residual_rng, expert_rng = jax.random.split(context.rng, 4)
+        raise ValueError("residual action composition requires a built base actor.")
 
     base_output = sample_base_action(context, observation, rng=base_rng)
     residual_scale = resolve_residual_scale(context)
@@ -315,10 +338,10 @@ def _choose_residual_action(context: TrainContext, observation, *, step: int):
     else:
         residual_action = np.asarray(raw_residual_output.action, dtype=np.float32)
         raw_residual = np.asarray(raw_residual_output.info["raw_residual_action"], dtype=np.float32)
-    action = np.clip(base_action + residual_action, -1.0, 1.0)
 
-    learner_output = PolicyOutput(
-        action=residual_action,
+    learner_action = np.clip(base_action + residual_action, -1.0, 1.0).astype(np.float32)
+    return PolicyOutput(
+        action=learner_action,
         log_prob=raw_residual_output.log_prob,
         info={
             **raw_residual_output.info,
@@ -326,10 +349,29 @@ def _choose_residual_action(context: TrainContext, observation, *, step: int):
             "raw_residual_action": raw_residual,
             "residual_action": residual_action,
             "residual_scale": residual_scale,
+            "learner_action": learner_action,
             "base_kind": context.base.kind,
             "base_checkpoint_path": str(context.base.checkpoint_path) if context.base.checkpoint_path else "",
         },
     )
+
+
+def _choose_residual_action(context: TrainContext, observation, *, step: int):
+    """Sample base and residual policies, then execute their clipped sum."""
+    policy_obs = policy_observation(observation, context)
+    context.rng, base_rng, residual_rng, expert_rng = jax.random.split(context.rng, 4)
+
+    learner_output = _sample_residual_learner_proposal(
+        context,
+        observation,
+        policy_obs,
+        step=step,
+        base_rng=base_rng,
+        residual_rng=residual_rng,
+    )
+    residual_scale = learner_output.info["residual_scale"]
+    action = learner_output.action
+
     expert_output = (
         _sample_actor(
             context.expert,
@@ -360,9 +402,11 @@ def choose_rollout_action(context: TrainContext, observation, *, step: int):
     policy_obs = policy_observation(observation, context)
     learner_output, expert_output = _sample_action_proposals(
         context,
+        observation,
         policy_obs,
         rollout_cfg=rollout_cfg,
         execute=execute,
+        step=step,
     )
     decision = _decide_controller(
         context,

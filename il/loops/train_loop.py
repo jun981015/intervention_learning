@@ -14,9 +14,15 @@ import numpy as np
 from il.buffers.routing import route_episode_to_buffers
 from il.buffers.schema import step_record_to_transition
 from il.builders.types import TrainContext
-from il.evaluation import evaluate_policy
+from il.evaluation import evaluate_context_policy
 from il.logger import MetricLogger
-from il.loops.rollout import choose_rollout_action, policy_observation, prepare_next_base_action, reset_rollout_state
+from il.loops.rollout import (
+    choose_rollout_action,
+    policy_observation,
+    prepare_next_base_action,
+    reset_rollout_state,
+    uses_residual_composition,
+)
 from il.loops.updates import run_update_spec
 from il.utils.flax_utils import save_agent
 from il.utils.types import ControllerId, GateDecision, StepRecord
@@ -173,6 +179,13 @@ def run_train_loop(context: TrainContext) -> TrainContext:
     log_interval = int(train_cfg["log_interval"])
     eval_interval = int(train_cfg.get("eval_interval", 0))
     save_interval = int(train_cfg.get("save_interval", 0))
+    update_interval = int(train_cfg.get("update_interval", 1))
+    updates_per_step = int(train_cfg.get("updates_per_step", 1))
+    save_final = bool(train_cfg.get("save_final", True))
+    if update_interval <= 0:
+        raise ValueError("train.update_interval must be positive.")
+    if updates_per_step < 0:
+        raise ValueError("train.updates_per_step must be non-negative.")
     include_failed_interventions = bool(replay_cfg.get("include_failed_interventions", False))
     demo_insert_mode = replay_cfg.get("demo_insert_mode", "append")
 
@@ -211,9 +224,12 @@ def run_train_loop(context: TrainContext) -> TrainContext:
         base_action = None
         residual_action = None
         next_base_action = None
-        if context.config["rollout"].get("execute") == "residual":
+        if uses_residual_composition(context):
             base_action = learner_output.info.get("base_action")
-            residual_action = learner_output.info.get("residual_action", learner_output.action)
+            if base_action is None:
+                raise ValueError("residual action composition requires learner_output.info['base_action'].")
+            base_action = np.asarray(base_action, dtype=np.float32)
+            residual_action = np.asarray(action, dtype=np.float32) - base_action
             context.rng, next_base_rng = jax.random.split(context.rng)
             next_base_action = prepare_next_base_action(context, next_observation, rng=next_base_rng).action
         transition = step_record_to_transition(
@@ -279,13 +295,23 @@ def run_train_loop(context: TrainContext) -> TrainContext:
             step=step,
             episode_count=episode_count,
         )
-        if initial_collect_done:
-            for update_spec in context.update_specs:
-                try:
-                    step_update_metrics.update(run_update_spec(context, update_spec, step=step))
-                except ValueError as exc:
-                    if "smaller than sequence_length" not in str(exc):
-                        raise
+        if initial_collect_done and updates_per_step > 0 and step % update_interval == 0:
+            update_metric_totals: dict[str, float] = {}
+            update_metric_counts: dict[str, int] = {}
+            for _ in range(updates_per_step):
+                for update_spec in context.update_specs:
+                    try:
+                        update_metrics = run_update_spec(context, update_spec, step=step)
+                    except ValueError as exc:
+                        if "smaller than sequence_length" not in str(exc):
+                            raise
+                        continue
+                    for key, value in update_metrics.items():
+                        update_metric_totals[key] = update_metric_totals.get(key, 0.0) + float(value)
+                        update_metric_counts[key] = update_metric_counts.get(key, 0) + 1
+            step_update_metrics.update(
+                {key: value / update_metric_counts[key] for key, value in update_metric_totals.items()}
+            )
 
         gate_metrics = _gate_metric_payload(decision)
         expert_execute_total += int(gate_metrics.get("gate/expert_execute_steps", 0.0))
@@ -327,14 +353,15 @@ def run_train_loop(context: TrainContext) -> TrainContext:
             last_log_time = now
 
         if eval_interval > 0 and step % eval_interval == 0:
-            eval_metrics = evaluate_policy(context, step=step)
+            eval_metrics = evaluate_context_policy(context, step=step)
             if eval_metrics:
                 logger.log_immediate(eval_metrics, step=step, print_stdout=True)
 
         if save_interval > 0 and step % save_interval == 0:
             _save_train_state(context, step)
 
-    _save_train_state(context, steps)
+    if save_final:
+        _save_train_state(context, steps)
     if bool(context.config["train"].get("save_replay", True)):
         _save_buffers(context)
     logger.close()

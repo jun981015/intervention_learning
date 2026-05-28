@@ -13,6 +13,7 @@ exp/
 logs/
 pids/
 videos/
+figures/
 analysis/
 wandb/
 

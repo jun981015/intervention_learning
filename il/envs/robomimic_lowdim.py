@@ -121,6 +121,8 @@ class RobomimicLowdimWrapper(gym.Env):
         )
         if observation_mode == "lowdim":
             self.observation_space = state_space
+        elif observation_mode == "state":
+            self.observation_space = Dict({"state": state_space})
         elif observation_mode == "pixels":
             h, w = self.image_hw
             self.observation_space = Dict(
@@ -180,6 +182,8 @@ class RobomimicLowdimWrapper(gym.Env):
         state = self._state_from_raw_obs(raw_obs)
         if self.observation_mode == "lowdim":
             return state
+        if self.observation_mode == "state":
+            return {"state": state}
         pixels = self._render_pixels()
         if self.observation_mode == "pixels":
             return pixels
@@ -351,7 +355,7 @@ def make_env(
     max_episode_steps: int | None = None,
 ):
     """Create a Robomimic low-dimensional env matching previous Square runs."""
-    if observation_mode != "lowdim" and not render_offscreen:
+    if observation_mode in ("pixels", "pixels_state") and not render_offscreen:
         raise ValueError("Robomimic image observations require render_offscreen=True.")
 
     dataset_path = _dataset_path(env_name)

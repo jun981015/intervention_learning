@@ -2,8 +2,6 @@
 
 Robomimic Square에서 human/expert intervention learning을 실험하기 위한 독립 프로젝트다.
 
-이 repo는 `qc`와 섞지 않는다. `qc`, `qc_base`는 참조용이고, 여기에는 intervention
-learning에 필요한 코드만 가져오거나 새로 정리한다.
 
 ## 문서 규칙
 
@@ -45,7 +43,7 @@ next_obs, reward, terminated, truncated, info = env.step(action)
 
 ## 설치
 
-`qc` conda 환경이 전혀 없는 새 PC를 기준으로 설치한다. 필요한 것은 conda와 git이다.
+conda 환경이 전혀 없는 새 PC를 기준으로 설치한다. 필요한 것은 conda와 git이다.
 GPU 학습/eval에서는 PC에 깔린 CUDA toolkit보다 NVIDIA driver와 JAX wheel 조합이 더
 중요하다. 기본 설치는 로컬 CUDA toolkit을 쓰지 않고 pip의 CUDA runtime wheel을 사용한다.
 
