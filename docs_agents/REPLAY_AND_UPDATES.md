@@ -26,10 +26,14 @@ Required fields:
 
 `actions` is always the action actually executed in the environment.
 
-For residual policies, `actions` is the combined executed action
-`clip(base_actions + residual_actions)`. `base_actions` and
-`next_base_actions` must be finite for residual RL updates. Non-residual
-transitions may keep these residual metadata fields as NaN placeholders.
+For residual policies, `actions` is the combined executed action. When the
+learner controls the env, this is usually `clip(base_actions +
+residual_actions)`. In residual+gate runs, expert-selected steps still store
+finite residual metadata with `residual_actions = actions - base_actions`, so
+the residual learner can treat the expert action as a residual correction target.
+`base_actions` and `next_base_actions` must be finite for residual RL updates.
+Non-residual transitions may keep these residual metadata fields as NaN
+placeholders.
 
 `episode_ids` identifies the episode containing the transition, and
 `episode_steps` is the 0-based step index within that episode. Image replay uses
@@ -44,6 +48,7 @@ these fields to reconstruct next image observations from the following frame.
 
 - `0`: none
 - `1`: random gate
+- `2`: expert-Q gap gate
 
 ## Terminals And Masks
 
@@ -120,7 +125,18 @@ boundary_mode = "truncate"
   boundaries; do not bootstrap at true termination boundaries.
 ```
 
-## Update-to-data Ratio
+## Update Scheduling And Update-to-data Ratio
+
+Initial online collection is controlled by `train.initial_collect_unit` and
+`train.initial_collect_count`. Supported units are `steps` and `episodes`; any
+other value raises `ValueError`. While initial collection is active, the env
+keeps stepping and filling replay, but gradient updates do not run.
+
+The train loop also consumes:
+
+- `train.update_interval`: update only on matching env steps.
+- `train.updates_per_step`: repeat all configured update specs this many times
+  and log averaged update metrics.
 
 Expose `utd_ratio` as a training config parameter. To match the QC update path,
 sample `batch_size * utd_ratio` transitions/sequences and reshape each batch

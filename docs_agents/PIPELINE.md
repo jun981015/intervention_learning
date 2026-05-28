@@ -21,6 +21,35 @@ next_obs, reward, terminated, truncated, info = env.step(action)
 The learner and expert must be sampled before gating so replay can store both
 proposed actions at the same state.
 
+## Residual Learner With Gates
+
+Residual action composition can now be combined with intervention gates. When
+`training.action_composition: residual` is enabled, the learner proposal passed
+to the gate is the full executable action, not the raw residual:
+
+```text
+base_action = base_policy(obs)
+raw_residual = residual_learner(concat(state, base_action))
+learner_output.action = clip(base_action + residual_scale * raw_residual)
+```
+
+If `intervention.enabled: true`, config conversion sets `rollout.execute =
+"gate"`, but `il.train.build_context()` still builds `actors.base` because
+residual composition needs it. The gate then chooses between the full learner
+action above and the expert action.
+
+Replay metadata for residual composition is stored even when the gate chooses
+the expert:
+
+```text
+base_actions      = base policy action at current obs
+next_base_actions = base policy action at next obs
+residual_actions  = executed_action - base_actions
+```
+
+For expert-selected steps, `residual_actions` is therefore the residual needed
+to reproduce the expert's executed action from the frozen base policy.
+
 ## RLPD Expert Loading
 
 Expert policies should be loaded through this repo's generic `RLPDPolicy`.
@@ -143,10 +172,11 @@ Loop v0 behavior:
 
 - Reset env, sample learner/expert proposals.
 - Use `rollout.execute` set to `learner`, `expert`, or `gate` to decide the executed action.
+- If `action_composition == "residual"`, build the learner proposal as `clip(base + residual)` before routing or gating.
 - Store every transition in `online_buffer`.
 - On episode end, route the episode into demo/intervention buffers through `route_episode_to_buffers()`.
-- Run configured `updates` by sampling from the requested replay source and updating the target actor.
-- Save trainable actor checkpoints at `save_interval`; save all replay buffers as `.npz` at the end.
+- Run configured `updates` after `initial_collect` is complete, respecting `update_interval` and `updates_per_step`.
+- Save trainable actor checkpoints at `save_interval`; save the final checkpoint only when `save_final` is true; save replay buffers as `.npz` at the end when enabled.
 
 Run:
 
@@ -167,8 +197,8 @@ Current limitations:
 
 ## Image Observation Status
 
-The Robomimic env wrapper can expose lowdim, image-only, or image+state
-observations.
+The Robomimic env wrapper can expose lowdim, state-only dict, image-only, or
+image+state observations.
 
 ```yaml
 env:
@@ -194,6 +224,10 @@ obs = {
 
 Verified Square camera names include `frontview`, `birdview`, `agentview`,
 `sideview`, `robot0_robotview`, and `robot0_eye_in_hand`.
+
+`observation_mode: state` returns `{"state": low_dim}` without pixels. This is
+useful for exercising dict-observation plumbing before policy image encoders are
+implemented.
 
 Important limitation: env and replay plumbing are image-ready, but current
 policies/networks are still lowdim-only. Pixel encoders and feature fusion are

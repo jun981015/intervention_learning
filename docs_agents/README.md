@@ -11,6 +11,7 @@ code work.
 - `INSTALL.md`: Conda environment setup, editable install, and validation commands.
 - `STATUS_2026-05-18.md`: Older implementation, decisions, validation status, and remaining work.
 - `STATUS_2026-05-21.md`: Current DAgger v0, pretrained loading, replay, and logger snapshot.
+- `STATUS_2026-05-28.md`: Latest residual+gate, eval/video, config runtime, observation-mode, and code-review follow-up snapshot.
 - `PROJECT_BRIEF.md`: Short project brief and document map.
 - `SCOPE.md`: Scope, constraints, out-of-scope items, and current scaffold.
 - `PIPELINE.md`: Online intervention step logic and demo/intervention buffer routing.
@@ -29,7 +30,7 @@ code work.
 - Treat `/home/junhyeong/repos/qc` and `/home/junhyeong/repos/qc_base` as references only.
 - Do not merge full QC-FQL, FQL, or BT logic into this project unless explicitly requested.
 - Diffusion/flow-matching code is allowed only as a BC policy component.
-- Keep the v0 pipeline simple: Robomimic Square, RLPD/SAC or BCFlow learner, RLPD/SAC checkpoint expert, random gate plus `expert_q_gap`, `horizon_length=1` by default.
+- Keep the v0 pipeline simple: Robomimic Square, RLPD/SAC or BCFlow learner, RLPD/SAC checkpoint expert, random gate plus `expert_q_gap`, `horizon_length=1` by default. Residual composition may be combined with gates, but validate new combinations with real-env smoke before long runs.
 - Preserve the separation between learner action, expert action, and executed action in replay.
 - Do not commit generated logs, videos, replay buffers, checkpoints, W&B files, or experiment outputs.
 - Keep `PROJECT_BRIEF.md` as a short navigation page. Put detailed notes in task-specific docs.

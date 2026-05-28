@@ -93,8 +93,7 @@ v0 기본값은 `frame_stack=1`이다. 세부 설명은
 ## Git 운영
 
 - 이 repo는 `/home/junhyeong/repos/intervention_learning`에서 독립 git으로 관리한다.
-- remote는 아직 연결하지 않는다.
-- GitHub SSH 설정이 끝나면 그때 remote를 추가하고 push한다.
+- remote는 GitHub에 연결되어 있고 `main`을 push한다.
 - weight, replay, video, log, wandb 산출물은 절대 커밋하지 않는다.
 - 큰 변경은 작은 커밋으로 쪼갠다.
 

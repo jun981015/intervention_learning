@@ -1,16 +1,19 @@
 # Implementation Plan
 
 
-## Current Status Update - 2026-05-27
+## Current Status Update - 2026-05-28
 
 This file preserves the early implementation plan. For current work, use:
 
 - `docs/IMPLEMENTATION_TODO.md` for the broader backlog.
+- `docs_agents/STATUS_2026-05-28.md` for the latest agent-facing handoff.
 - `docs/REAL_ENV_SMOKE_TESTS.md` for real Robomimic smoke results.
 - `docs/CODE_REVIEW_2026-05-26.md` and `docs_agents/CODE_REVIEW_2026-05-26.md` for the active code-review follow-up.
 
 The original Robomimic env wiring, recipe-driven `il.train` entrypoint, DAgger
-relabel real-env smoke, expert-Q gap real-env smoke, and residual RLPD/TD3 paths
+relabel real-env smoke, expert-Q gap real-env smoke, residual RLPD/TD3 paths,
+gate runtime Protocol cleanup, runtime update scheduling fields, generic eval
+video helper, state-only dict observation mode, and residual+gate rollout wiring
 are no longer pending scaffold tasks.
 
 ## Completed Scaffold
@@ -53,16 +56,17 @@ bc flow policy checkpoint smoke ok
 
 ## Next Implementation Steps
 
-1. Address the remaining open items from `CODE_REVIEW_2026-05-26.md`, starting with gate runtime contract cleanup and the buffer-underfilled exception class.
+1. Run a real Robomimic build-only and short rollout for residual+intervention gate, starting with a random gate before `expert_q_gap`.
 2. Add explicit dataset adapters for offline demo/prefill canonicalization.
 3. Add replay save/load round-trip tests, including real-env generated replay files.
-4. Run DAgger update-on smoke and residual large-config runtime checks.
-5. Before adding a new gate family, decide whether the current `ControllerGate` Protocol is enough or whether the new gate needs a `GateContext`.
+4. Replace duplicated residual-kind checks with a small actor/agent registry before adding another residual family.
+5. Decide whether the next gate family can fit the current `ControllerGate` Protocol or needs a `GateContext`.
 
 ## Pending Risks
 
-- `RandomGate` does not currently implement `reset_episode()` even though the train loop calls it through the gate contract.
+- Residual+intervention gate wiring has only dummy-policy smoke coverage; run real-env build-only and short rollout before long jobs.
 - Replay save/load round-trip test is missing.
 - Dataset semantics are still partly implicit in the Robomimic prefill loader.
-- Some public config fields are not fully consumed at runtime: `update_interval`, `updates_per_step`, `save_final`, `keep_last`, eval video fields, and `storage.store_*`.
+- `keep_last` is intentionally not wired; `storage.store_*` remains mostly declarative rather than controlling canonical replay writes.
 - General learner/expert action chunk queues are not implemented.
+- `PolicyOutput.info` still carries implicit contracts for chunk and residual metadata.

@@ -94,28 +94,34 @@
 
 ### 5. Config에 있지만 runtime에서 아직 안 쓰는 field가 있음
 
-파일: `config/dagger.yaml`, `il/loops/train_loop.py`
+파일: `config/dagger.yaml`, `il/loops/train_loop.py`, `il/evaluation/evaluator.py`
 
-현재 미반영 또는 약하게 반영된 예:
+2026-05-28 현재 반영된 field:
 
+- `training.initial_collect.unit`: `steps | episodes`만 허용
 - `training.update_interval`
 - `training.updates_per_step`
-- `training.reset_on_done`
-- `evaluation.action_mode`
 - `evaluation.render_video`
 - `evaluation.video_episodes`
+- `evaluation.video_frame_skip`
 - `checkpointing.save_final`
 - `checkpointing.save_replay`
-- `checkpointing.keep_last`
+
+아직 미반영 또는 선언적 성격이 강한 field:
+
+- `training.reset_on_done`
+- `evaluation.action_mode`
+- `checkpointing.keep_last` (`keep_last`는 사용자가 필요 없다고 판단해 구현하지 않음)
 - `storage.store_*`
 
 영향:
 
-- YAML만 보고 기대한 동작과 runtime 동작이 다를 수 있다.
+- YAML만 보고 기대한 동작과 runtime 동작이 다를 수 있는 field가 아직 일부 남아 있다.
 
 판단:
 
-- 실험 시작 전에는 특히 update/checkpoint/eval 관련 field를 맞춰두는 게 좋다.
+- update/checkpoint/eval video 관련 큰 항목은 반영됐다.
+- 남은 항목은 실제 필요가 생길 때 구현하거나 schema에서 의미를 줄인다.
 
 ### 6. Env registry가 Robomimic lowdim 하나뿐임
 
@@ -235,17 +241,20 @@ if name == "expert" and not spec.get("pretrained_path"):
 
 현재 동작:
 
-- `step >= start_training`이면 매 step 모든 `update_specs`를 한 번씩 돈다.
-- `update_interval`, `updates_per_step`는 현재 반영되지 않는다.
+- initial collect가 끝나기 전에는 env step과 replay insert만 수행하고 gradient update는 돌리지 않는다.
+- initial collect unit은 `steps`와 `episodes`를 지원한다.
+- `update_interval`에 맞는 step에서만 update한다.
+- `updates_per_step`만큼 모든 `update_specs`를 반복 실행하고 metric은 평균으로 기록한다.
 
 영향:
 
-- UTD, sparse update, BC/RL alternating schedule을 config로 제대로 표현하지 못한다.
+- sparse update와 단순 repeated update는 config로 표현 가능하다.
+- 더 복잡한 alternating schedule은 아직 update spec/scheduler 설계가 필요하다.
 
 판단:
 
-- DAgger v0에는 충분하다.
-- RL+BC 실험 전에 풀어야 한다.
+- DAgger v0와 residual TD3/RLPD smoke에는 충분하다.
+- RL+BC hybrid schedule이 복잡해지면 별도 scheduler를 검토한다.
 
 ### 13. Buffer 부족 skip이 exception string에 의존함
 
@@ -271,18 +280,20 @@ if name == "expert" and not spec.get("pretrained_path"):
 
 현재 동작:
 
-- 마지막 checkpoint는 항상 저장.
+- `save_interval`에 맞춰 checkpoint를 저장한다.
+- `checkpointing.save_final`이 true일 때만 마지막 checkpoint를 저장한다.
 - replay buffer는 `checkpointing.save_replay`가 true일 때만 저장한다.
-- `save_final`, `keep_last`는 아직 반영되지 않는다.
+- `keep_last`는 사용자가 필요 없다고 판단해 구현하지 않았다.
 
 영향:
 
 - `save_replay: false`로 긴 실험의 replay 저장 용량을 줄일 수 있다.
+- `save_final: false`로 마지막 checkpoint 저장을 끌 수 있다.
 
 판단:
 
-- `save_replay`는 반영됐다.
-- `save_final`, `keep_last`는 실제 long run 전 추가 검토가 필요하다.
+- 현재 필요한 save flag는 반영됐다.
+- checkpoint retention policy가 필요해지면 `keep_last`를 다시 설계한다.
 
 ## Logging 관련 지점
 
@@ -387,12 +398,14 @@ if name == "expert" and not spec.get("pretrained_path"):
 
 ## 다음에 풀면 좋은 순서
 
-1. `training.update_interval`, `training.updates_per_step`, `checkpointing.save_*`를 runtime에 반영한다.
-2. stdout logger key를 algorithm-agnostic하게 만든다.
-3. replay sampling을 named multi-batch로 넘길 수 있게 한다.
-4. env registry에 두 번째 env를 추가할 때 dataset path/reward mode를 config화한다.
-5. action chunk queue는 별도 작업으로 구현한다.
-6. image policy는 env/replay가 안정된 뒤 network builder부터 추가한다.
+1. residual+intervention gate 조합을 실제 Robomimic config에서 build-only와 짧은 rollout으로 검증한다.
+2. 새 residual family 전에 actor/agent registry로 residual kind set 중복을 제거한다.
+3. `PolicyOutput.info`의 residual/chunk metadata contract를 typed helper로 정리한다.
+4. stdout logger key를 algorithm-agnostic하게 만든다.
+5. replay sampling을 named multi-batch로 넘길 수 있게 한다.
+6. env registry에 두 번째 env를 추가할 때 dataset path/reward mode를 config화한다.
+7. action chunk queue는 별도 작업으로 구현한다.
+8. image policy는 env/replay가 안정된 뒤 network builder부터 추가한다.
 
 ## 현재 판단
 

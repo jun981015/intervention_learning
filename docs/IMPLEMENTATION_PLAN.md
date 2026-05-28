@@ -1,17 +1,20 @@
 # 구현 계획과 검증 상태
 
 
-## 현재 상태 업데이트 — 2026-05-27
+## 현재 상태 업데이트 — 2026-05-28
 
 이 문서는 초기 구현 계획의 기록을 포함한다. 현재 작업 우선순위와 최신 TODO는
-[IMPLEMENTATION_TODO.md](IMPLEMENTATION_TODO.md)를 기준으로 본다. 실제 env smoke 결과는
-[REAL_ENV_SMOKE_TESTS.md](REAL_ENV_SMOKE_TESTS.md)를 보고, 2026-05-26 코드 리뷰 후속은
+[IMPLEMENTATION_TODO.md](IMPLEMENTATION_TODO.md)를 기준으로 본다. 최신 전체 스냅샷은
+[STATUS_2026-05-28.md](STATUS_2026-05-28.md)를 보고, 실제 env smoke 결과는
+[REAL_ENV_SMOKE_TESTS.md](REAL_ENV_SMOKE_TESTS.md)를 본다. 2026-05-26 코드 리뷰 후속은
 [CODE_REVIEW_2026-05-26.md](CODE_REVIEW_2026-05-26.md)의 현재 해결 상태 표를 본다.
 
 초기 계획 중 Robomimic env construction, recipe-driven `il.train` entrypoint, DAgger relabel real-env
-smoke, expert-Q gap real-env smoke, residual RLPD/TD3 path는 이미 구현 또는 smoke 검증이 진행됐다.
-남은 작업은 replay round-trip, dataset adapter/canonicalization, gate abstraction 정리, update/checkpoint
-config 반영, action chunk queue, image policy 학습 쪽이다.
+smoke, expert-Q gap real-env smoke, residual RLPD/TD3 path, gate runtime Protocol 정리, runtime update
+scheduling field 반영, generic eval/video helper, state-only dict observation mode, residual+gate rollout wiring은
+이미 구현 또는 smoke 검증이 진행됐다. 남은 작업은 residual+gate real-env smoke, replay round-trip,
+dataset adapter/canonicalization, residual family registry, PolicyOutput metadata contract, action chunk queue,
+image policy 학습 쪽이다.
 
 ## 완료된 Scaffold
 
@@ -56,24 +59,28 @@ bc flow policy checkpoint smoke ok
 최신 순서는 [IMPLEMENTATION_TODO.md](IMPLEMENTATION_TODO.md)를 따른다. 현재 기준으로 우선순위가 높은
 작업은 다음이다.
 
-1. `CODE_REVIEW_2026-05-26.md`의 남은 P0/P1 항목을 작은 단위로 처리한다.
-2. offline demo/prefill dataset adapter와 canonicalization interface를 추가한다.
-3. replay save/load round-trip test를 실제 env 산출물까지 포함해 보강한다.
-4. DAgger update-on smoke와 residual large config runtime을 검증한다.
-5. 새 gate family를 추가하기 전에 `ControllerGate` runtime contract와 필요 시 `GateContext`를 정리한다.
+1. residual+intervention gate 조합을 실제 Robomimic config에서 build-only와 짧은 rollout으로 검증한다.
+2. 새 residual family 전에 `il/builders/actors.py`의 residual kind literal set을 registry/spec로 정리한다.
+3. `PolicyOutput.info`의 residual/chunk metadata contract를 typed helper나 작은 dataclass로 정리한다.
+4. offline demo/prefill dataset adapter와 canonicalization interface를 추가한다.
+5. replay save/load round-trip test를 실제 env 산출물까지 포함해 보강한다.
 
 ## 아직 안 된 것
 
+- residual+intervention gate real-env build-only / short rollout smoke
 - replay buffer save/load round-trip test
 - dataset adapter / canonicalization interface
-- `update_interval`, `updates_per_step`, `save_final`, `keep_last` 등 일부 public config field의 runtime 반영
+- residual family registry / `AgentSpec` 정리
+- `PolicyOutput.info` metadata contract 정리
 - learner/expert 일반 action chunk queue
 - image observation policy/network 학습 경로
+
+`update_interval`, `updates_per_step`, `save_final`, eval video field는 runtime에 반영됐다. `keep_last`는 사용자가
+필요 없다고 판단해 구현하지 않았고, `storage.store_*`는 아직 canonical replay schema runtime switch가 아니다.
 
 ## Git 운영
 
 - 이 repo는 `/home/junhyeong/repos/intervention_learning`에서 독립 git으로 관리한다.
-- remote는 아직 연결하지 않는다.
-- GitHub SSH 설정이 끝나면 그때 remote를 추가하고 push한다.
+- remote는 GitHub에 연결되어 있고 `main`을 push한다.
 - weight, replay, video, log, wandb 산출물은 절대 커밋하지 않는다.
 - 큰 변경은 작은 커밋으로 쪼갠다.

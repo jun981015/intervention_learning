@@ -8,9 +8,11 @@
 
 ### 현재 상태 스냅샷
 
-2026-05-21 기준으로 DAgger v0, pretrained loading, replay/buffer, env/image, logger 상태를 별도 문서에 정리했다.
+최신 구현 상태는 2026-05-28 스냅샷을 기준으로 본다. 이전 DAgger v0, pretrained loading,
+replay/buffer, env/image, logger 상태는 2026-05-21 문서에 남겨둔다.
 
-- current status: [STATUS_2026-05-21.md](STATUS_2026-05-21.md)
+- latest status: [STATUS_2026-05-28.md](STATUS_2026-05-28.md)
+- previous status: [STATUS_2026-05-21.md](STATUS_2026-05-21.md)
 - logging and metrics: [LOGGING_AND_METRICS.md](LOGGING_AND_METRICS.md)
 - residual policy integration: [RESIDUAL_POLICY_ANALYSIS.md](RESIDUAL_POLICY_ANALYSIS.md)
 

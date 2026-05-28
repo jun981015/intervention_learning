@@ -10,29 +10,29 @@
 ---
 
 
-## 현재 해결 상태 — 2026-05-27
+## 현재 해결 상태 — 2026-05-28
 
-이 문서는 리뷰 당시 발견 사항을 보존한다. 아래는 현재 코드 기준 진행 상태다.
+이 문서는 리뷰 당시 발견 사항을 보존한다. 아래 표는 현재 코드 기준 진행 상태다.
+최신 전체 스냅샷은 [STATUS_2026-05-28.md](STATUS_2026-05-28.md)를 본다.
 
 | id | 상태 | 코드 기준 확인 |
 | --- | --- | --- |
-| P0-1 ExpertQGapGate episode reset | 부분 해결 | `ExpertQGapGate.reset_episode()`가 추가됐고 `reset_rollout_state(..., reset_gate=True)`가 episode 시작/종료에서 gate state를 초기화한다. 남은 문제: `RandomGate`에는 아직 `reset_episode()`가 없어서 random gate runtime path는 깨질 수 있다. |
-| P0-2 residual_scale train/eval 불일치 | 해결 | `il/loops/rollout.py::resolve_residual_scale()`가 추가됐고 eval도 같은 helper를 사용한다. |
-| P0-3 buffer 부족 예외 string match | 미해결 | train loop가 여전히 `"smaller than sequence_length"` 문자열로 `ValueError`를 구분한다. 전용 예외가 필요하다. |
-| P1-1 residual rollout hardcoding | 미해결 | `rollout.execute == "residual"` 분기와 `PolicyOutput.info` key contract가 train/eval/rollout에 남아 있다. |
-| P1-2 gate Protocol이 expert_agent 중심 | 미해결 | 새 gate family를 추가하기 전에 `ControllerGate` runtime contract와 `GateContext` 도입 여부를 결정해야 한다. 현재 선호 방향은 Protocol을 유지하되 `@runtime_checkable`, build-time check, `RandomGate.reset_episode()`를 먼저 넣고, learner/base/history가 필요한 gate가 들어올 때 `GateContext`로 확장하는 것이다. |
+| P0-1 ExpertQGapGate episode reset | 해결 | `ControllerGate`가 `@runtime_checkable` Protocol이고, `TrainContext.gate` / `build_gate()` 타입이 `ControllerGate | None`이다. build-time Protocol validation이 있고, `ExpertQGapGate`와 `RandomGate` 모두 `reset_episode()`를 구현한다. |
+| P0-2 residual_scale train/eval 불일치 | 해결 | `il/loops/rollout.py::resolve_residual_scale()`가 train rollout과 context eval에서 공유된다. |
+| P0-3 buffer 부족 예외 string match | 의도적으로 유지 | 사용자가 `BufferTooSmall` custom exception 제거를 요청했다. replay가 아직 `sequence_length`보다 작을 때는 기존 `"smaller than sequence_length"` `ValueError` 문자열 기반 skip을 유지한다. |
+| P1-1 residual rollout hardcoding | 부분 해결 | residual learner proposal 생성은 residual-only와 residual+gate path가 같은 helper를 쓴다. 다만 `rollout.execute == "residual"` 분기와 `PolicyOutput.info` key contract는 아직 남아 있다. |
+| P1-2 gate Protocol이 expert_agent 중심 | 부분 해결 | Protocol runtime contract는 정리했다. 다만 `decide(..., expert_agent=..., action_dim=...)` 시그니처는 아직 expert-agent 중심이다. `GateContext`는 learner/base/history가 필요한 새 gate family가 들어올 때 도입한다. |
 | P1-3 hasattr dispatch | 미해결 | critic-only update, Q API, policy sampling 쪽에 `hasattr` dispatch가 남아 있다. |
-| P1-4 residual kind set 중복 | 미해결 | `{"residual_rlpd", "residual_td3"}` literal set이 actor builder 여러 위치에 남아 있다. |
-| P1-5 `PolicyOutput.info` implicit schema | 미해결 | `full_action_chunk`, `base_action`, `residual_action` 등 info key contract가 typed field/Protocol로 승격되지 않았다. |
-| P2-1 critic loss normalization | 미해결 | residual RLPD와 residual TD3 critic loss가 valid fraction에 따라 loss magnitude가 달라지는 방식으로 남아 있다. |
+| P1-4 residual kind set 중복 | 미해결 | `{"residual_rlpd", "residual_td3"}` literal set이 actor builder 여러 위치에 남아 있다. 새 residual family 추가 전 registry/spec 정리가 필요하다. |
+| P1-5 `PolicyOutput.info` implicit schema | 미해결 | `full_action_chunk`, `base_action`, `residual_action`, `raw_residual_action` 등 info key contract가 typed field/Protocol로 승격되지 않았다. |
+| P2-1 critic loss normalization | 해결 | RLPD, residual RLPD, residual TD3, BC critic loss가 valid sample 수 기준 normalizer를 사용한다. |
 
-새 gate family 작업 전 최소 선행 작업은 P0-1의 남은 부분과 P1-2의 첫 단계다.
+현재 다음 작은 작업 후보는 아래 셋이다.
 
 ```text
-1. ControllerGate Protocol에 runtime contract를 건다.
-2. build_gate() 반환 타입과 TrainContext.gate 타입을 ControllerGate | None으로 명시한다.
-3. build_gate()에서 runtime_checkable Protocol로 검사한다.
-4. RandomGate에 no-op reset_episode()를 추가한다.
+1. residual+intervention gate real-env build-only / short rollout smoke를 먼저 돌린다.
+2. 새 residual family 전에 il/builders/actors.py의 residual kind literal set을 registry/spec로 정리한다.
+3. PolicyOutput.info의 residual/chunk metadata contract를 typed helper나 작은 dataclass로 정리한다.
 ```
 
 ---
@@ -42,9 +42,9 @@
 
 **가장 큰 약점**: `"residual"`이라는 한 가지 알고리즘 변형이 너무 깊이 박혀 있음. `rollout.execute == "residual"` string과 `{"residual_rlpd", "residual_td3"}` set이 4–5개 파일에 산재. 5–6개 algorithm × 3–4개 gate variant ablation 단계로 가려면 한 번 refactor 필요.
 
-**즉시 고칠 버그 2개**:
-1. Gate 상태가 episode 경계에서 reset 안 됨 (`il/gating/expert_q_gap.py`)
-2. Eval/train의 `residual_scale` fallback 경로 불일치 (`il/evaluation/evaluator.py`)
+**리뷰 당시 즉시 고칠 버그 2개**는 현재 해결됐다.
+1. Gate 상태 episode reset은 `ControllerGate.reset_episode()` runtime contract로 정리했다.
+2. Eval/train의 `residual_scale` fallback은 `resolve_residual_scale()` 공유 helper로 맞췄다.
 
 ---
 
@@ -110,7 +110,9 @@ except ValueError as exc:
 
 `replay_buffer.py:562`의 에러 메시지가 reword 되면 silent breakage. 반대로, 무관한 ValueError가 우연히 이 문자열을 포함하면 silent suppression.
 
-**수정 방향**: `class BufferTooSmall(ValueError)` 같은 전용 예외를 정의하고 isinstance 체크.
+**수정 방향(리뷰 당시 제안)**: `class BufferTooSmall(ValueError)` 같은 전용 예외를 정의하고 isinstance 체크.
+
+**현재 결정**: 사용자가 `BufferTooSmall`을 제거하라고 했으므로 전용 예외는 도입하지 않는다. 기존 문자열 기반 skip은 남겨둔다.
 
 ---
 
@@ -241,7 +243,9 @@ class QEvaluable(Protocol):
 
 ### 3.1 Critic loss normalization 불일치
 
-**위치**: `il/algo/rl/residual_rlpd.py:91` vs `il/algo/bc/critic.py:113-115`
+**현재 상태**: 해결됨. RLPD, residual RLPD, residual TD3, BC critic loss가 valid sample 수 기준 normalizer를 사용한다.
+
+**위치(리뷰 당시)**: `il/algo/rl/residual_rlpd.py:91` vs `il/algo/bc/critic.py:113-115`
 
 ```python
 # residual_rlpd.py:91
@@ -486,13 +490,13 @@ ls config/smoke_*.yaml | xargs -I {} python -m il.train --config {} --build-only
 
 ## 8. Refactor 우선순위 제안
 
-작업 순서대로 정렬:
+2026-05-28 현재 기준 작업 순서:
 
-1. **P0-1 Gate reset** — 1줄짜리 `reset_episode()` + train_loop에서 호출. 1시간.
-2. **P0-2 residual_scale** — 헬퍼 추출 + 양쪽 호출. 30분.
-3. **P0-3 exception class** — 전용 예외 정의 + isinstance 체크. 30분.
-4. **P1-2 GateContext + reset_episode** — Protocol 시그니처 변경. 기존 gate 2개 같이 수정. P0-1과 묶을 수 있음. 2~3시간.
-5. **P1-4 agent registry** — `AGENT_REGISTRY` 패턴 도입, set 4곳 제거. 2~3시간.
-6. **P1-1, P1-5 RolloutStrategy + PolicyOutput typed fields** — 가장 큰 작업. 새 algo 추가 직전에 같이 처리. 1일.
-7. **P1-3 CriticOnlyUpdatable Protocol** — 작은 정리. P1-1 작업 중 같이.
-8. **P2-1 critic loss 정규화 통일** — 1줄. 언제든.
+1. **Residual+gate real-env smoke** — 더미 smoke는 통과했으므로 실제 Robomimic config에서 build-only와 짧은 rollout을 확인한다.
+2. **P1-4 agent registry** — `AGENT_REGISTRY` 또는 `AgentSpec` 패턴을 도입해 residual kind set 중복을 제거한다.
+3. **P1-5 PolicyOutput metadata contract** — `base_action`, `residual_action`, `raw_residual_action`, `full_action_chunk` key contract를 typed helper나 작은 dataclass로 정리한다.
+4. **P1-3 Protocol 정리** — critic-only update, Q evaluation, policy sampling의 `hasattr` dispatch를 필요한 Protocol로 좁힌다.
+5. **Dataset adapter / canonicalization** — offline demo/prefill 의미를 adapter에서 명시한다.
+6. **Replay save/load round-trip** — 실제 env 산출 replay까지 schema와 episode/image metadata round-trip을 검증한다.
+7. **Action chunk queue** — learner/expert 일반 action chunk queue는 residual base queue와 별도 설계로 처리한다.
+8. **Image policy** — env/replay plumbing은 있으나 policy image encoder가 없으므로 별도 설계 후 진행한다.

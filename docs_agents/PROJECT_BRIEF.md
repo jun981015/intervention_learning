@@ -13,7 +13,8 @@ metadata.
 
 ## Document Map
 
-- Current implementation and handoff snapshot: [STATUS_2026-05-21.md](STATUS_2026-05-21.md)
+- Latest implementation and handoff snapshot: [STATUS_2026-05-28.md](STATUS_2026-05-28.md)
+- Previous DAgger/pretrained/replay/logger snapshot: [STATUS_2026-05-21.md](STATUS_2026-05-21.md)
 - Scope, constraints, and current scaffold: [SCOPE.md](SCOPE.md)
 - Online intervention step logic and BC routing: [PIPELINE.md](PIPELINE.md)
 - DAgger learner rollout and expert relabel baseline: [DAGGER_BASELINE.md](DAGGER_BASELINE.md)
@@ -48,9 +49,12 @@ without explicit user confirmation.
 Simulator-free intervention data flow is verified by `scripts/smoke_test.py`.
 The current code has a recipe-driven `python -m il.train` entrypoint, real
 Robomimic Square smoke coverage for DAgger relabeling and `expert_q_gap`, and
-residual RLPD/TD3 rollout/update paths. Simulator-free smoke still covers
-gate/replay, intervention routing, mixed replay sampling, RLPD, BC MLP, and BC
-Flow update paths.
+residual RLPD/TD3 rollout/update paths. As of 2026-05-28, residual action
+composition can also feed intervention gates: the gate sees the full
+`clip(base + residual)` learner proposal, while replay keeps residual metadata
+for both learner-selected and expert-selected steps. Simulator-free smoke still
+covers gate/replay, intervention routing, mixed replay sampling, RLPD, BC MLP,
+and BC Flow update paths.
 
 The active work is no longer basic env wiring. Treat
 `docs/CODE_REVIEW_2026-05-26.md` and the agent-facing

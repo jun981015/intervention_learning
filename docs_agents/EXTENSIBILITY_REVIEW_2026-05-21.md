@@ -16,16 +16,16 @@ It is not yet a general-purpose algorithm framework. Most assumptions are accept
 - Public YAML configs are converted into a legacy internal recipe by `new_schema_to_legacy_recipe()`.
 - `replay.sampling` currently selects one primary sampling spec, preferring `bc` over `rl`; named multi-batch sampling is not fully wired.
 - Update objective inference has been removed. Update specs now define target actor, replay source, sampling knobs, and optional `target_action_key`; the agent kind owns its loss in `agent.update(batch)`.
-- Several YAML fields are not fully consumed at runtime: `update_interval`, `updates_per_step`, eval video/action mode fields, and checkpoint save flags.
+- `update_interval`, `updates_per_step`, `save_final`, and eval video fields are now consumed at runtime. Remaining mostly declarative fields include `keep_last` and `storage.store_*`.
 - Env registry currently contains only `robomimic_lowdim`.
 - Robomimic dataset paths and sparse success reward are hardcoded in `il/envs/robomimic_lowdim.py`.
 - Current actor builder rejects image-only observations and supports low-dimensional policies only.
 - Expert actors require `pretrained_path`; scripted/human/random experts need a separate expert provider abstraction.
 - Activation fields in YAML are currently dropped by the config adapter.
-- Eval loop is learner-only.
-- Update scheduling is simple: update every step after `start_training`.
+- Eval is now split into generic `evaluate_policy(policy, env, ...)` and a TrainContext adapter; context eval still evaluates the learner policy rather than a gated controller.
+- Update scheduling now respects initial collection, `update_interval`, and `updates_per_step`.
 - Buffer-underfilled update skip depends on matching a `ValueError` string.
-- Final checkpoint and replay buffer are always saved, regardless of save flags.
+- Final checkpoint saving respects `save_final`; replay saving still follows the train config save flag.
 - Stdout summary is tied to BCFlow metric names.
 - Chunk policies execute only the first primitive action from a sampled chunk.
 - RLPD target critic aggregation uses the first two critics only.
@@ -33,7 +33,7 @@ It is not yet a general-purpose algorithm framework. Most assumptions are accept
 
 ## Suggested Order To Relax Assumptions
 
-1. Wire `update_interval`, `updates_per_step`, and checkpoint save flags into the train loop.
+1. Run real-env residual+intervention gate smoke after the new wiring.
 2. Make stdout logging metric selection algorithm-agnostic.
 3. Support true named multi-batch replay sampling for RL+BC hybrid learners.
 4. Add a second env registry entry and make dataset path/reward mode configurable.

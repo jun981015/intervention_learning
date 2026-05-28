@@ -35,6 +35,8 @@ intermediate hook used when calling the module with `mutable=["intermediates"]`.
 | --- | --- | --- |
 | RLPD critic | `il/algo/rl/rlpd.py` | `activations=relu`, `activate_final=True`, `use_layer_norm=config["layer_norm"]` |
 | RLPD actor | `il/algo/rl/rlpd.py` | `activations=relu`, `activate_final=True`, `use_layer_norm=config["actor_layer_norm"]` |
+| Residual RLPD actor | `il/algo/rl/residual_rlpd.py` | Same base MLP as RLPD, with base action concatenated to lowdim state and small residual actor output init |
+| Residual TD3 actor | `il/algo/rl/residual_td3.py` | Deterministic tanh actor head returning raw residual action in `[-1, 1]`; noise is added outside the model |
 | BC MLP actor | `il/algo/bc/mlp.py` | `activations=relu`, `activate_final=True`, `use_layer_norm=config["actor_layer_norm"]` |
 | BC Flow vector field | `il/networks/flow.py` | `activations=gelu`, `kernel_init=variance_scaling`, `use_layer_norm=config["actor_layer_norm"]`, `layer_norm_after_activation=True`, `sow_intermediate_feature=True` |
 
@@ -66,8 +68,8 @@ it. Treat it as reserved for a future residual-MLP ablation.
 
 Current policy/network implementations train on low-dimensional state inputs
 only. Env wrappers and replay buffers can already carry dict observations such
-as `pixels_state`, but `BCFlowAgent`, `BCMLPAgent`, and `ACRLPDAgent` do not yet
-attach an image encoder.
+as `state` and `pixels_state`, but `BCFlowAgent`, `BCMLPAgent`, and
+`ACRLPDAgent` do not yet attach an image encoder.
 
 If a recipe tries to build a current low-dim agent with image observations, the
 actor builder should raise `NotImplementedError` instead of silently flattening
