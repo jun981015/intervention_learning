@@ -11,7 +11,7 @@
 
 ## 현재 Artifact
 
-### RLPD Expert
+### Square RLPD Expert
 
 경로:
 
@@ -64,12 +64,80 @@ expert = RLPDPolicy.from_checkpoint(
 )
 ```
 
-검증 결과:
+과거 검증 결과(critic contract 수정 전):
 
 ```text
 Restored from .../rlpd_square_bc03_seed0_2m/params_2000000.pkl
 action_shape (7,)
 log_prob 16.3937
+```
+
+### ToolHang Residual TD3 Expert
+
+현재 ToolHang expert로 쓰는 residual TD3 weight는 scale `0.2`, BC regularization `0.1`, actor LR `5e-5`, warmup `0.1` run의 1.5M checkpoint다.
+
+재사용 artifact 경로:
+
+```text
+exp/pretrained/residual_td3_tool_hang_ph_scale02_bc01_actorlr5e5_warmup01_seed0_1500k/
+  params_1500000.pkl
+  config.json
+  metadata.json
+```
+
+원본 run 경로와 전체 checkpoint:
+
+```text
+exp/runs/intervention_learning/tool_hang_residual_online/tool_hang-ph-low_dim/
+  tool_hang_residual_td3_bcflow_top200_mixed50_shiftm1_nstep5_scale02_bc01_actorlr5e5_warmup01_seed0_2m/
+    params_100000.pkl
+    params_200000.pkl
+    ...
+    params_1500000.pkl
+    ...
+    params_2000000.pkl
+```
+
+같이 쓰는 base policy:
+
+```text
+exp/pretrained/bcflow_tool_hang_ph_top200_actorln_seed0_1m/
+  params_1000000.pkl
+```
+
+확인된 shape:
+
+```text
+env_obs_dim=53
+base_action_dim=7
+residual_actor_obs_dim=60
+action_dim=7
+residual_scale=0.2
+checkpoint_step=1500000
+```
+
+사용 config:
+
+```text
+config/tool_hang_residual_td3_scale02_ckpt1500k_expert_random_gate_smoke.yaml
+```
+
+주의:
+
+- residual TD3 expert는 plain state만으로 action을 내지 않는다. `state + base_action`을 입력으로 받고, 실행 action은 `clip(base_action + residual_scale * raw_residual)`이다.
+- 따라서 ToolHang residual expert는 위 base BCFlow checkpoint와 같이 써야 한다.
+- expert role로 쓸 때 artifact `config.json`은 deterministic proposal을 위해 `exploration_noise=0.0`으로 둔다.
+- 이 1.5M checkpoint의 critic은 2026-05-29 이전 contract인 `Q([state, base_action], executed_action)`로 학습되었다. 현재 수정된 code contract에서는 Q-gap critic 용도로 쓰지 말고 재학습해야 한다. full-agent restore도 critic shape mismatch가 날 수 있으며, actor만 재사용하려면 별도 partial restore가 필요하다.
+
+과거 검증 결과(critic contract 수정 전):
+
+```text
+Restored from .../residual_td3_tool_hang_ph_scale02_bc01_actorlr5e5_warmup01_seed0_1500k/params_1500000.pkl
+expert=residual_td3
+gate=random
+real-env ToolHang 20-step smoke passed
+interventions=8/20
+intervention_action_matches_expert_max_abs_err=0
 ```
 
 ### Diffusion / Flow BC Learner
@@ -126,7 +194,7 @@ learner = BCFlowPolicy.from_checkpoint(
 )
 ```
 
-검증 결과:
+과거 검증 결과(critic contract 수정 전):
 
 ```text
 Restored from .../bcflow_square_actorln_seed0_1m/params_1000000.pkl

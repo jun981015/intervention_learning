@@ -1,0 +1,176 @@
+# ToolHang PH residual TD3 using frozen top200 BCFlow base.
+# Defaults follow the original ResFiT TD3 recipe where possible.
+
+experiment:
+  name: tool_hang_residual_td3_bcflow_top200_mixed50_shiftm1_nstep5_scale02_bc01_actorlr5e5_warmup01_seed0_2m_criticfix
+  seed: 0
+  output_dir: exp/runs
+  tags:
+    - tool_hang
+    - ph
+    - residual
+    - td3
+    - bcflow_base
+    - top200
+    - mixed50
+    - reward_shift_m1
+    - nstep5
+    - scale02
+    - utd4
+    - bc01
+    - actorlr5e5
+    - warmup01
+
+_env_dataset: &tool_hang_dataset /home/junhyeong/.robomimic/tool_hang/ph/low_dim_v15.hdf5
+
+env:
+  kind: robomimic
+  name: tool_hang-ph-low_dim
+  observation_mode: lowdim
+  max_episode_steps: 1000
+  render_offscreen: false
+  reward_scale: 1.0
+  reward_shift: -1.0
+  build_eval_env: false
+  eval_seed_offset: 10000
+
+actors:
+  base:
+    kind: bc_flow
+    trainable: false
+    pretrained_path: exp/pretrained/bcflow_tool_hang_ph_top200_actorln_seed0_1m
+    checkpoint_step: 1000000
+    policy_view: true
+    network: {}
+    optimization: {}
+    update: {}
+
+  learner:
+    kind: residual_td3
+    trainable: true
+    pretrained_path: null
+    checkpoint_step: null
+    policy_view: true
+    network:
+      actor_hidden_dims: [512, 512, 512, 512]
+      critic_hidden_dims: [512, 512, 512, 512]
+      actor_layer_norm: true
+      critic_layer_norm: true
+      horizon_length: 1
+      action_chunking: false
+      num_qs: 2
+      residual_scale: 0.2
+      residual_action_l2: 0.0
+      actor_final_fc_init_scale: 0.0
+    optimization:
+      lr: 1.0e-4
+      actor_lr: 5.0e-5
+      critic_lr: 1.0e-4
+      batch_size: 256
+      grad_clip_norm: 1.0
+    update:
+      discount: 0.99
+      tau: 0.005
+      target_q_agg: min
+      actor_q_agg: mean
+      target_policy_noise: true
+      target_noise_std: 0.05
+      target_noise_clip: 0.3
+      exploration_noise: 0.05
+      exploration_noise_clip: 0.3
+      bc_alpha: 0.1
+      critic_warmup_steps: 10000
+      actor_update_interval: 4
+
+training:
+  total_steps: 2000000
+  start_training: 10000
+  update_interval: 1
+  updates_per_step: 1
+  action_mode: first_action
+  action_composition: residual
+  residual_warmup_steps: 10000
+  warmup_noise_scale: 0.1
+  use_base_policy_for_warmup: true
+  reset_on_done: true
+
+replay:
+  buffers:
+    online_size: 2000000
+    demo_size: 120000
+    intervention_size: 16
+  prefill:
+    demo:
+      path: *tool_hang_dataset
+      format: robomimic_hdf5
+      reward_scale: 1.0
+      reward_shift: -1.0
+      cache_base_actions: true
+  routing:
+    demo_insert_mode: none
+    include_failed_interventions: false
+  sampling:
+    rl:
+      source:
+        online: 0.5
+        demo: 0.5
+      sequence_length: 5
+      batch_size: 256
+      utd_ratio: 4
+      boundary_mode: drop
+    bc:
+      source:
+        demo: 1.0
+      sequence_length: 1
+      batch_size: 256
+      boundary_mode: drop
+
+intervention:
+  enabled: false
+  expert_query: never
+  gate:
+    kind: always_off
+
+storage:
+  store_executed_action: true
+  store_learner_action: true
+  store_expert_action: false
+  store_log_prob: true
+  store_gate_score: true
+  store_episode_metadata: true
+
+evaluation:
+  interval: 0
+  episodes: 0
+  seed: 1000
+  render_video: false
+  video_episodes: 0
+  action_mode: first_action
+
+logging:
+  stdout_interval: 5000
+  csv: true
+  jsonl: true
+  wandb:
+    enabled: true
+    project: intervention_learning
+    group: tool_hang_residual_online
+    name: tool_hang_residual_td3_bcflow_top200_mixed50_shiftm1_nstep5_scale02_bc01_actorlr5e5_warmup01_seed0_2m_criticfix
+    tags:
+      - tool_hang
+      - residual_td3
+      - bcflow_top200
+      - mixed50
+      - reward_shift_m1
+      - nstep5
+      - scale02
+      - utd4
+      - bc01
+      - actorlr5e5
+      - warmup01
+
+checkpointing:
+  interval: 100000
+  save_final: true
+  save_replay: true
+  keep_last: 3

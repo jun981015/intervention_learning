@@ -8,12 +8,19 @@ only learns the residual actor-critic update once base actions are present in
 the replay batch.
 """
 
+import copy
+from functools import partial
+
+import flax
 import jax
 import jax.numpy as jnp
 import ml_collections
+import optax
 
-from il.algo.rl.rlpd import ACRLPDAgent, get_config as get_rlpd_config
+from il.algo.rl.rlpd import ACRLPDAgent, TARGET_NUM_QS, Temperature, get_config as get_rlpd_config
 from il.distributions import TanhNormal
+from il.networks import Ensemble, MLP, StateActionValue
+from il.utils.flax_utils import ModuleDict, TrainState
 
 
 class ResidualRLPDAgent(ACRLPDAgent):
@@ -38,23 +45,32 @@ class ResidualRLPDAgent(ACRLPDAgent):
         value = jnp.asarray(value)
         return value[..., -1, :] if value.ndim >= 3 else value
 
-    def _augment_residual_observations(self, observations, base_actions):
-        """Append stop-gradient base actions to low-dim observations."""
+    @staticmethod
+    def _augment_residual_observations(observations, base_actions):
+        """Append stop-gradient base actions for residual actor inputs."""
         return jnp.concatenate(
             [jnp.asarray(observations), jax.lax.stop_gradient(jnp.asarray(base_actions))],
             axis=-1,
         )
 
-    def _current_observations(self, batch):
-        """Return current observations with base actions appended."""
+    def _current_actor_observations(self, batch):
+        """Return current actor observations with base actions appended."""
         base_actions = self._sequence_first_action(batch["base_actions"])
         return self._augment_residual_observations(batch["observations"], base_actions)
 
-    def _next_observations(self, batch):
-        """Return bootstrap observations with next base actions appended."""
+    def _next_actor_observations(self, batch):
+        """Return bootstrap actor observations with next base actions appended."""
         next_observations = batch["next_observations"][..., -1, :]
         next_base_actions = self._sequence_last_action(batch["next_base_actions"])
         return self._augment_residual_observations(next_observations, next_base_actions)
+
+    def _current_critic_observations(self, batch):
+        """Return current critic observations without residual actor features."""
+        return batch["observations"]
+
+    def _next_critic_observations(self, batch):
+        """Return bootstrap critic observations without residual actor features."""
+        return batch["next_observations"][..., -1, :]
 
     def _compose_residual_action(self, base_actions, raw_residual_actions):
         """Convert raw residual actor output into the executed action space."""
@@ -73,10 +89,11 @@ class ResidualRLPDAgent(ACRLPDAgent):
             batch_actions = batch["actions"][..., 0, :]
 
         rng, sample_rng = jax.random.split(rng)
-        observations = self._current_observations(batch)
-        next_observations = self._next_observations(batch)
+        observations = self._current_critic_observations(batch)
+        next_observations = self._next_critic_observations(batch)
+        next_actor_observations = self._next_actor_observations(batch)
 
-        next_dist = self.network.select("actor")(next_observations)
+        next_dist = self.network.select("actor")(next_actor_observations)
         raw_next_actions = next_dist.sample(seed=sample_rng)
         next_base_actions = self._sequence_last_action(batch["next_base_actions"])
         next_actions = self._compose_residual_action(next_base_actions, raw_next_actions)
@@ -116,15 +133,16 @@ class ResidualRLPDAgent(ACRLPDAgent):
 
     def actor_loss(self, batch, grad_params, rng):
         """Compute residual actor, temperature, residual L2, and optional BC losses."""
-        observations = self._current_observations(batch)
-        dist = self.network.select("actor")(observations, params=grad_params)
+        critic_observations = self._current_critic_observations(batch)
+        actor_observations = self._current_actor_observations(batch)
+        dist = self.network.select("actor")(actor_observations, params=grad_params)
         raw_actions = dist.sample(seed=rng)
         log_probs = dist.log_prob(raw_actions)
 
         base_actions = self._sequence_first_action(batch["base_actions"])
         actions_for_q = self._compose_residual_action(base_actions, raw_actions)
 
-        qs = self.network.select("critic")(observations, actions_for_q)
+        qs = self.network.select("critic")(critic_observations, actions_for_q)
         q = jnp.mean(qs, axis=0)
         actor_loss = (log_probs * self.network.select("alpha")() - q).mean()
 
@@ -190,6 +208,58 @@ class ResidualRLPDAgent(ACRLPDAgent):
         """Run multiple critic-only updates with `lax.scan` over a UTD batch."""
         agent, infos = jax.lax.scan(self._critic_only_update, self, batch)
         return agent, jax.tree_util.tree_map(lambda x: x.mean(), infos)
+
+
+    @classmethod
+    def create(cls, seed, ex_observations, ex_actions, config):
+        """Initialize residual actor on state+base_action and critic on state/action."""
+        rng = jax.random.PRNGKey(seed)
+        rng, init_rng = jax.random.split(rng, 2)
+
+        action_dim = ex_actions.shape[-1]
+        if config["action_chunking"]:
+            raise NotImplementedError("residual_rlpd v0 supports primitive actions only; set action_chunking=False.")
+        if config["target_entropy"] is None:
+            config["target_entropy"] = -config["target_entropy_multiplier"] * action_dim
+        if config["num_qs"] < TARGET_NUM_QS:
+            raise ValueError(f"num_qs must be >= {TARGET_NUM_QS}.")
+
+        critic_base_cls = partial(
+            MLP,
+            hidden_dims=config["value_hidden_dims"],
+            activate_final=True,
+            use_layer_norm=config["layer_norm"],
+        )
+        critic_cls = partial(StateActionValue, base_cls=critic_base_cls)
+        critic_def = Ensemble(critic_cls, num=config["num_qs"])
+
+        actor_base_cls = partial(
+            MLP,
+            hidden_dims=config["actor_hidden_dims"],
+            activate_final=True,
+            use_layer_norm=config["actor_layer_norm"],
+        )
+        actor_def = cls.actor_distribution_def(actor_base_cls, action_dim, config)
+        alpha_def = Temperature(config["init_temp"])
+
+        ex_actor_observations = cls._augment_residual_observations(ex_observations, ex_actions)
+        network_info = dict(
+            critic=(critic_def, (ex_observations, ex_actions)),
+            target_critic=(copy.deepcopy(critic_def), (ex_observations, ex_actions)),
+            actor=(actor_def, (ex_actor_observations,)),
+            alpha=(alpha_def, ()),
+        )
+        networks = {key: value[0] for key, value in network_info.items()}
+        network_args = {key: value[1] for key, value in network_info.items()}
+
+        network_def = ModuleDict(networks)
+        network_tx = optax.adam(learning_rate=config["lr"])
+        network_params = network_def.init(init_rng, **network_args)["params"]
+        network = TrainState.create(network_def, network_params, tx=network_tx, grad_clip_norm=config["grad_clip_norm"])
+        network.params["modules_target_critic"] = network.params["modules_critic"]
+
+        return cls(rng, network=network, config=flax.core.FrozenDict(**config))
+
 
 
 def get_config():

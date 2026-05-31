@@ -33,6 +33,16 @@ def resolve_residual_scale(context: TrainContext) -> float:
     return float(context.learner.config.get("residual_scale", context.config["rollout"].get("residual_scale", 1.0)))
 
 
+def _actor_uses_residual_policy(bundle: ActorBundle | None) -> bool:
+    """Return whether an actor expects state-plus-base-action observations."""
+    return bool(bundle is not None and bundle.config.get("residual_policy", False))
+
+
+def _resolve_actor_residual_scale(context: TrainContext, bundle: ActorBundle) -> float:
+    """Return the residual scale for a specific residual actor."""
+    return float(bundle.config.get("residual_scale", context.config["rollout"].get("residual_scale", 1.0)))
+
+
 def uses_residual_composition(context: TrainContext) -> bool:
     """Return whether learner actions are composed as base plus residual."""
     rollout_cfg = context.config["rollout"]
@@ -60,6 +70,81 @@ def _sample_actor(
     if bundle is None or bundle.policy is None:
         return _missing_policy_output(action_dim, reason=reason_if_missing)
     return bundle.policy.sample_action(observation, rng=rng)
+
+
+def _sample_residual_actor_proposal(
+    context: TrainContext,
+    bundle: ActorBundle,
+    policy_obs,
+    *,
+    base_action: np.ndarray,
+    rng,
+    reason_if_missing: str,
+) -> PolicyOutput:
+    """Sample a residual actor and compose it with the supplied base action."""
+    base_action = np.asarray(base_action, dtype=np.float32)
+    if not np.isfinite(base_action).all():
+        raise ValueError(f"{bundle.name} residual actor requires a finite base action.")
+
+    residual_obs = residual_policy_observation(policy_obs, base_action)
+    raw_residual_output = _sample_actor(
+        bundle,
+        residual_obs,
+        rng=rng,
+        action_dim=context.action_dim,
+        reason_if_missing=reason_if_missing,
+    )
+    if np.isnan(raw_residual_output.action).any():
+        raise ValueError(f"{bundle.name} residual actor produced NaN action.")
+
+    residual_scale = _resolve_actor_residual_scale(context, bundle)
+    raw_residual = np.asarray(raw_residual_output.action, dtype=np.float32)
+    residual_action = raw_residual * residual_scale
+    composed_action = np.clip(base_action + residual_action, -1.0, 1.0).astype(np.float32)
+    return PolicyOutput(
+        action=composed_action,
+        log_prob=raw_residual_output.log_prob,
+        info={
+            **raw_residual_output.info,
+            "base_action": base_action,
+            "raw_residual_action": raw_residual,
+            "residual_action": residual_action,
+            "residual_scale": residual_scale,
+            "composed_action": composed_action,
+            "base_kind": context.base.kind if context.base is not None else "",
+            "base_checkpoint_path": str(context.base.checkpoint_path) if context.base and context.base.checkpoint_path else "",
+        },
+    )
+
+
+def _sample_expert_proposal(
+    context: TrainContext,
+    policy_obs,
+    *,
+    rng,
+    base_action: np.ndarray | None,
+) -> PolicyOutput:
+    """Sample an expert proposal, including residual experts that need base actions."""
+    if _actor_uses_residual_policy(context.expert):
+        if context.expert is None:
+            return _missing_policy_output(context.action_dim, reason="expert_not_sampled")
+        if base_action is None:
+            raise ValueError("residual expert requires residual action composition and an available base action.")
+        return _sample_residual_actor_proposal(
+            context,
+            context.expert,
+            policy_obs,
+            base_action=base_action,
+            rng=rng,
+            reason_if_missing="expert_not_sampled",
+        )
+    return _sample_actor(
+        context.expert,
+        policy_obs,
+        rng=rng,
+        action_dim=context.action_dim,
+        reason_if_missing="expert_not_sampled",
+    )
 
 
 def _rollout_state(context: TrainContext) -> dict[str, Any]:
@@ -188,6 +273,7 @@ def _sample_action_proposals(
     sample_learner = bool(rollout_cfg.get("sample_learner", True)) or execute in ("learner", "gate")
     sample_expert = bool(rollout_cfg.get("sample_expert", False)) or execute in ("expert", "gate")
 
+    base_action_for_expert = None
     if not sample_learner:
         learner_output = _missing_policy_output(context.action_dim, reason="learner_not_sampled")
     elif uses_residual_composition(context):
@@ -200,6 +286,7 @@ def _sample_action_proposals(
             base_rng=base_rng,
             residual_rng=residual_rng,
         )
+        base_action_for_expert = learner_output.info.get("base_action")
     else:
         learner_output = _sample_actor(
             context.learner,
@@ -209,12 +296,11 @@ def _sample_action_proposals(
             reason_if_missing="learner_not_sampled",
         )
     expert_output = (
-        _sample_actor(
-            context.expert,
+        _sample_expert_proposal(
+            context,
             policy_obs,
             rng=expert_rng,
-            action_dim=context.action_dim,
-            reason_if_missing="expert_not_sampled",
+            base_action=base_action_for_expert,
         )
         if sample_expert
         else _missing_policy_output(context.action_dim, reason="expert_not_sampled")
@@ -373,12 +459,11 @@ def _choose_residual_action(context: TrainContext, observation, *, step: int):
     action = learner_output.action
 
     expert_output = (
-        _sample_actor(
-            context.expert,
+        _sample_expert_proposal(
+            context,
             policy_obs,
             rng=expert_rng,
-            action_dim=context.action_dim,
-            reason_if_missing="expert_not_sampled",
+            base_action=learner_output.info.get("base_action"),
         )
         if bool(context.config["rollout"].get("sample_expert", False))
         else _missing_policy_output(context.action_dim, reason="expert_not_sampled")

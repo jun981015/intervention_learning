@@ -15,6 +15,7 @@ from gymnasium.spaces import Box, Dict
 from il.algo.bc.flow import BCFlowAgent, get_config as get_bc_flow_config
 from il.algo.bc.mlp import BCMLPAgent, get_config as get_bc_mlp_config
 from il.algo.rl.residual_rlpd import ResidualRLPDAgent, get_config as get_residual_rlpd_config
+from il.algo.rl.residual_td3 import ResidualTD3Agent, get_config as get_residual_td3_config
 from il.algo.rl.rlpd import ACRLPDAgent, get_config as get_rlpd_config
 from il.buffers.mixed import MixedReplaySampler, MixedSamplingSpec, ReplayBufferCollection
 from il.buffers.replay_buffer import ReplayBuffer
@@ -236,7 +237,8 @@ def smoke_residual_base_noise_warmup() -> None:
     )
 
     assert np.allclose(action, base_action)
-    assert np.allclose(learner_output.action, np.zeros_like(base_action))
+    assert np.allclose(learner_output.action, base_action)
+    assert np.allclose(learner_output.info["residual_action"], np.zeros_like(base_action))
     assert learner_output.info["residual_warmup"] == 1
     assert np.isnan(expert_output.action).all()
     assert not decision.use_expert
@@ -731,7 +733,7 @@ def smoke_residual_rlpd(obs_dim: int, action_dim: int) -> None:
     config.base_obs_dim = obs_dim
     config.bc_alpha = 0.0
 
-    ex_observations = jnp.zeros((config.batch_size, obs_dim + action_dim), dtype=jnp.float32)
+    ex_observations = jnp.zeros((config.batch_size, obs_dim), dtype=jnp.float32)
     ex_actions = jnp.zeros((config.batch_size, action_dim), dtype=jnp.float32)
     agent = ResidualRLPDAgent.create(10, ex_observations, ex_actions, config)
     batch = make_update_batch(config.batch_size, obs_dim, action_dim, config.horizon_length)
@@ -750,6 +752,45 @@ def smoke_residual_rlpd(obs_dim: int, action_dim: int) -> None:
     assert np.isfinite(float(info["actor/residual_l2"]))
 
 
+
+def smoke_residual_td3(obs_dim: int, action_dim: int) -> None:
+    """Check residual TD3 uses state+base_action actor inputs and state/action critic inputs."""
+    config = get_residual_td3_config()
+    config.horizon_length = 1
+    config.action_chunking = False
+    config.actor_hidden_dims = (32, 32)
+    config.value_hidden_dims = (32, 32)
+    config.batch_size = 4
+    config.num_qs = 2
+    config.target_q_agg = "min"
+    config.grad_clip_norm = None
+    config.residual_scale = 0.1
+    config.base_obs_dim = obs_dim
+    config.target_policy_noise = False
+    config.exploration_noise = 0.0
+
+    ex_observations = jnp.zeros((config.batch_size, obs_dim), dtype=jnp.float32)
+    ex_actions = jnp.zeros((config.batch_size, action_dim), dtype=jnp.float32)
+    agent = ResidualTD3Agent.create(13, ex_observations, ex_actions, config)
+
+    batch = make_update_batch(config.batch_size, obs_dim, action_dim, config.horizon_length)
+    batch["base_actions"] = np.full((config.batch_size, config.horizon_length, action_dim), 0.2, dtype=np.float32)
+    batch["next_base_actions"] = np.full((config.batch_size, config.horizon_length, action_dim), 0.1, dtype=np.float32)
+    agent, info = agent.update(batch)
+
+    q = agent.evaluate_q(
+        jnp.zeros((1, obs_dim), dtype=jnp.float32),
+        jnp.zeros((1, action_dim), dtype=jnp.float32),
+    )
+    residual_obs = jnp.zeros((1, obs_dim + action_dim), dtype=jnp.float32)
+    action, log_prob = agent.sample_actions_with_log_prob(residual_obs, rng=jax.random.PRNGKey(13))
+
+    assert q.shape == (1,)
+    assert action.shape == (1, action_dim)
+    assert log_prob.shape == (1,)
+    assert np.isfinite(float(info["critic/critic_loss"]))
+    assert np.isfinite(float(info["actor/residual_l2"]))
+
 def smoke_residual_rlpd_with_bc_aux(obs_dim: int, action_dim: int) -> None:
     """Check residual BC regularization can train against cached demo base actions."""
     config = get_residual_rlpd_config()
@@ -766,7 +807,7 @@ def smoke_residual_rlpd_with_bc_aux(obs_dim: int, action_dim: int) -> None:
     config.base_obs_dim = obs_dim
     config.bc_alpha = 0.1
 
-    ex_observations = jnp.zeros((config.batch_size, obs_dim + action_dim), dtype=jnp.float32)
+    ex_observations = jnp.zeros((config.batch_size, obs_dim), dtype=jnp.float32)
     ex_actions = jnp.zeros((config.batch_size, action_dim), dtype=jnp.float32)
     agent = ResidualRLPDAgent.create(12, ex_observations, ex_actions, config)
 
@@ -1242,6 +1283,8 @@ def main() -> None:
     print("residual transition schema smoke ok")
     smoke_residual_rlpd(args.obs_dim, args.action_dim)
     print("residual rlpd smoke ok")
+    smoke_residual_td3(args.obs_dim, args.action_dim)
+    print("residual td3 smoke ok")
     smoke_residual_rlpd_with_bc_aux(args.obs_dim, args.action_dim)
     print("residual rlpd bc aux smoke ok")
     smoke_residual_metadata_validation(args.obs_dim, args.action_dim)

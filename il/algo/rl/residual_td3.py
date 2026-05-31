@@ -85,11 +85,12 @@ class ResidualTD3Agent(ResidualRLPDAgent):
     def critic_loss(self, batch, grad_params, rng):
         """Compute n-step TD3 critic loss using target actor smoothing."""
         batch_actions = batch["actions"][..., 0, :]
-        observations = self._current_observations(batch)
-        next_observations = self._next_observations(batch)
+        observations = self._current_critic_observations(batch)
+        next_observations = self._next_critic_observations(batch)
         next_base_actions = self._sequence_last_action(batch["next_base_actions"])
+        next_actor_observations = self._augment_residual_observations(next_observations, next_base_actions)
 
-        next_actions = self._target_actor_actions(next_observations, next_base_actions, rng)
+        next_actions = self._target_actor_actions(next_actor_observations, next_base_actions, rng)
         next_qs = self.network.select("target_critic")(next_observations, next_actions)
         next_q = self.aggregate_target_qs(next_qs)
 
@@ -126,13 +127,14 @@ class ResidualTD3Agent(ResidualRLPDAgent):
 
     def actor_loss(self, batch, grad_params, rng):
         """Compute deterministic policy gradient plus optional residual BC."""
+        critic_observations = self._current_critic_observations(batch)
         del rng
-        observations = self._current_observations(batch)
-        raw_actions = self.network.select("actor")(observations, params=grad_params)
+        actor_observations = self._current_actor_observations(batch)
+        raw_actions = self.network.select("actor")(actor_observations, params=grad_params)
         base_actions = self._sequence_first_action(batch["base_actions"])
         actions_for_q = self._compose_residual_action(base_actions, raw_actions)
 
-        qs = self.network.select("critic")(observations, actions_for_q)
+        qs = self.network.select("critic")(critic_observations, actions_for_q)
         q = self._actor_q(qs)
         actor_loss_base = -q.mean()
 
@@ -280,11 +282,12 @@ class ResidualTD3Agent(ResidualRLPDAgent):
         )
         actor_def = cls.actor_distribution_def(actor_base_cls, action_dim, config)
 
+        ex_actor_observations = cls._augment_residual_observations(ex_observations, ex_actions)
         network_info = dict(
             critic=(critic_def, (ex_observations, ex_actions)),
             target_critic=(copy.deepcopy(critic_def), (ex_observations, ex_actions)),
-            actor=(actor_def, (ex_observations,)),
-            target_actor=(copy.deepcopy(actor_def), (ex_observations,)),
+            actor=(actor_def, (ex_actor_observations,)),
+            target_actor=(copy.deepcopy(actor_def), (ex_actor_observations,)),
         )
         networks = {key: value[0] for key, value in network_info.items()}
         network_args = {key: value[1] for key, value in network_info.items()}

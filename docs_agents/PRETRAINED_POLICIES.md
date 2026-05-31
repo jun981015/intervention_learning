@@ -10,7 +10,7 @@ intervention-learning experiments.
 - Do not commit checkpoints, replay buffers, videos, logs, W&B files, or generated experiment outputs.
 - Current artifacts live under `exp/pretrained/`, which is ignored by git.
 
-## RLPD Expert
+## Square RLPD Expert
 
 Artifact:
 
@@ -58,12 +58,80 @@ expert = RLPDPolicy.from_checkpoint(
 )
 ```
 
-Validation:
+Legacy validation (before critic-contract fix):
 
 ```text
 Restored from .../rlpd_square_bc03_seed0_2m/params_2000000.pkl
 action_shape (7,)
 log_prob 16.3937
+```
+
+## ToolHang Residual TD3 Expert
+
+The current ToolHang expert artifact is the 1.5M checkpoint from the residual TD3 run with residual scale `0.2`, BC regularization `0.1`, actor LR `5e-5`, and warmup `0.1`.
+
+Reusable artifact:
+
+```text
+exp/pretrained/residual_td3_tool_hang_ph_scale02_bc01_actorlr5e5_warmup01_seed0_1500k/
+  params_1500000.pkl
+  config.json
+  metadata.json
+```
+
+Source run and full checkpoint set:
+
+```text
+exp/runs/intervention_learning/tool_hang_residual_online/tool_hang-ph-low_dim/
+  tool_hang_residual_td3_bcflow_top200_mixed50_shiftm1_nstep5_scale02_bc01_actorlr5e5_warmup01_seed0_2m/
+    params_100000.pkl
+    params_200000.pkl
+    ...
+    params_1500000.pkl
+    ...
+    params_2000000.pkl
+```
+
+Required base policy:
+
+```text
+exp/pretrained/bcflow_tool_hang_ph_top200_actorln_seed0_1m/
+  params_1000000.pkl
+```
+
+Shape/config:
+
+```text
+env_obs_dim=53
+base_action_dim=7
+residual_actor_obs_dim=60
+action_dim=7
+residual_scale=0.2
+checkpoint_step=1500000
+```
+
+Config using this expert:
+
+```text
+config/tool_hang_residual_td3_scale02_ckpt1500k_expert_random_gate_smoke.yaml
+```
+
+Notes:
+
+- A residual TD3 expert does not act from plain state alone. It consumes `state + base_action`, then executes `clip(base_action + residual_scale * raw_residual)`.
+- Use this ToolHang residual expert with the BCFlow base checkpoint listed above.
+- The reusable expert artifact has `exploration_noise=0.0` in `config.json` for deterministic expert proposals.
+- This 1.5M checkpoint critic was trained with the pre-2026-05-29 contract, `Q([state, base_action], executed_action)`. Do not use it for Q-gap critic routing under the corrected code contract; retraining is required. Full-agent restore can also hit critic shape mismatch, and actor-only reuse would need a separate partial-restore path.
+
+Legacy validation (before critic-contract fix):
+
+```text
+Restored from .../residual_td3_tool_hang_ph_scale02_bc01_actorlr5e5_warmup01_seed0_1500k/params_1500000.pkl
+expert=residual_td3
+gate=random
+real-env ToolHang 20-step smoke passed
+interventions=8/20
+intervention_action_matches_expert_max_abs_err=0
 ```
 
 ## Flow BC Learner
@@ -115,7 +183,7 @@ learner = BCFlowPolicy.from_checkpoint(
 )
 ```
 
-Validation:
+Legacy validation (before critic-contract fix):
 
 ```text
 Restored from .../bcflow_square_actorln_seed0_1m/params_1000000.pkl

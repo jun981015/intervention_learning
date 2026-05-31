@@ -125,8 +125,6 @@ def create_agent(
     if env_spec.obs_dim is None:
         raise NotImplementedError("Image observations need an encoder-backed agent implementation.")
     obs_dim = int(env_spec.obs_dim)
-    if kind in {"residual_rlpd", "residual_td3"}:
-        obs_dim += int(env_spec.action_dim)
     ex_observations = jnp.zeros((batch_size, obs_dim), dtype=jnp.float32)
     ex_actions = jnp.zeros((batch_size, env_spec.action_dim), dtype=jnp.float32)
     if kind == "bc_flow":
