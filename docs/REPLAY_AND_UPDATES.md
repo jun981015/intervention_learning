@@ -182,7 +182,7 @@ batch = sample_rl_update_batch(buffers, config)
 ## Initial Replay Prefill
 
 online/intervention/demo buffer는 optional하게 시작 시점에 기존 replay dataset으로 채울 수 있다.
-현재 지원하는 포맷은 `ReplayBuffer.save_npz()`로 저장한 schema-compatible `.npz`다.
+prefill은 파일 `format`과 semantic `adapter`를 분리한다. `adapter`는 생략할 수 있고, `npz`는 `replay_npz`, Robomimic demo format은 `demo_actions_are_expert`로 기본 추론한다.
 
 예시:
 
@@ -195,21 +195,19 @@ replay:
     demo:
       path: /path/to/demo_replay.npz
       format: npz
+      adapter: replay_npz
       max_transitions: 100000  # optional
       cache_base_actions: true     # optional, residual RL only; requires actors.base
 ```
 
 `prefill`은 `online`, `intervention`, `demo` 중 원하는 buffer에 걸 수 있다. 물리 buffer는 계속
 분리되어 있고, prefill은 해당 buffer의 초기 `size/pointer`만 채운다.
-간단한 경우 `demo: /path/to/demo_replay.npz`처럼 path string만 넣어도 된다.
+간단한 saved replay `.npz`는 `demo: /path/to/demo_replay.npz` 같은 path string shorthand도 쓸 수 있다. semantic이 애매한 source에서는 `adapter`를 명시한다.
 
 Residual RL에서 `cache_base_actions: true`를 켜면 builder가 frozen `actors.base` policy를 prefill dataset의 observation에 돌려 `base_actions`, `next_base_actions`, diagnostic `residual_actions`를 채운다. 이 옵션은 policy inference를 dataset 전체에 수행하므로 명시적으로만 켠다.
 
 
-High-priority TODO: dataset adapter / canonicalization interface가 필요하다. offline demo dataset은 source마다
-`actions`의 의미가 다르므로, loader가 암묵적으로 `actions -> expert_actions`를 복사하면 안 된다.
-예를 들어 `adapter: demo_actions_are_expert`처럼 명시된 경우에만 demo `actions`를 `expert_actions`로
-채우고, `adapter: replay_npz`는 schema-compatible saved replay를 그대로 읽는 식으로 분리한다.
+Dataset adapter / canonicalization은 `build_buffers()` prefill 경로에서 적용된다. `adapter: demo_actions_are_expert`에서만 demo `actions`를 `expert_actions`로 채우고, `learner_actions`와 gate score/log-prob 같은 online-only metadata는 NaN placeholder로 둔다. `adapter: replay_npz`는 saved replay-like data를 읽고, 오래된 파일에 optional metadata가 없으면 NaN/default placeholder를 채운다.
 
 image replay도 같은 방식으로 로드된다. `.npz` 안의 `image_observations/<camera>` key는
 `ReplayBuffer.image_data[camera]`로 복원되고, sample 시 `i+1` frame으로 next image를 재구성한다.

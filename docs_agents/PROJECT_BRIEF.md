@@ -40,7 +40,7 @@ without explicit user confirmation.
 - Do not merge full FQL, QC-FQL, or BT logic unless explicitly requested.
 - Keep v0 simple: Robomimic Square, RLPD/SAC learner/expert, random gate plus `expert_q_gap` gate, `horizon_length=1` by default.
 - Preserve learner action, expert action, executed action, and gate metadata separately in replay.
-- High-priority TODO: add explicit dataset adapters for offline demo/prefill canonicalization; do not implicitly copy `actions` to `expert_actions` without adapter semantics.
+- Dataset adapters are explicit for offline demo/prefill canonicalization; do not implicitly copy `actions` to `expert_actions` without adapter semantics.
 - Action chunk queue TODO: prefer `collections.deque` per learner/expert, allow different learner/expert horizons, canonical `full_action_chunk=(horizon, action_dim)`, and clear queues on controller switch.
 - Horizon TODO: separate BC action chunk horizon from RL n-step TD horizon. Do not let one `horizon_length` implicitly control both losses once RL+BC mixed updates are added.
 

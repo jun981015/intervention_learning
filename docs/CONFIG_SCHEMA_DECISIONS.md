@@ -187,6 +187,8 @@ replay:
 
 결정:
 
+- `replay.prefill.<buffer>`는 파일 `format`과 semantic `adapter`를 분리한다. `adapter`는 생략 가능하며, `npz`는 `replay_npz`, Robomimic demo format은 `demo_actions_are_expert`로 기본 추론한다.
+- `adapter`가 dataset semantic을 canonical replay schema로 변환한다. loader는 파일 구조만 읽고 `actions -> expert_actions` 같은 semantic copy를 하지 않는다.
 - top-level `objectives` 대신 `replay.sampling`에서 batch를 이름 붙여 뽑을 수 있게 열어둔다.
 - pure BC/DAgger는 `sampling.bc`만 있으면 된다.
 - pure RL은 `sampling.rl`만 있으면 된다.

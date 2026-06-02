@@ -97,6 +97,7 @@ replay:
     demo:
       path: *tool_hang_dataset
       format: robomimic_hdf5
+      adapter: demo_actions_are_expert
       reward_scale: 1.0
       reward_shift: -1.0
       cache_base_actions: true

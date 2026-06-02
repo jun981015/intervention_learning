@@ -192,8 +192,7 @@ total count matches the requested batch size.
 ## Initial Replay Prefill
 
 `online`, `intervention`, and `demo` buffers can optionally be prefilled at
-startup from an existing replay dataset. The currently supported format is a
-schema-compatible `.npz` saved by `ReplayBuffer.save_npz()`.
+startup from an existing replay dataset. Prefill separates file `format` from semantic `adapter`. `adapter` can be omitted: `npz` defaults to `replay_npz`, and Robomimic demo formats default to `demo_actions_are_expert`.
 
 Example:
 
@@ -206,6 +205,7 @@ replay:
     demo:
       path: /path/to/demo_replay.npz
       format: npz
+      adapter: replay_npz
       max_transitions: 100000  # optional
       cache_base_actions: true  # optional, residual RL only; requires actors.base
 ```
@@ -213,8 +213,7 @@ replay:
 `prefill` can target any physical buffer: `online`, `intervention`, or `demo`.
 The buffers remain physically separate; prefill only initializes the target
 buffer's contents, `size`, and `pointer`.
-For simple cases, a direct path string such as `demo: /path/to/demo_replay.npz`
-is also accepted.
+A direct saved-replay `.npz` path such as `demo: /path/to/demo_replay.npz` is accepted. Use explicit `adapter` when the source semantics are ambiguous.
 
 Image replay is restored from the same `.npz` format. Keys such as
 `image_observations/<camera>` are restored into `ReplayBuffer.image_data[camera]`,
@@ -226,12 +225,7 @@ over the prefilled observations and fills `base_actions`, `next_base_actions`,
 and diagnostic `residual_actions`. This can be expensive on large datasets and
 must stay opt-in.
 
-High-priority TODO: add explicit dataset adapters / canonicalization. Offline
-demo sources do not all give `actions` the same meaning. The loader should not
-silently copy `actions` into `expert_actions` unless an adapter such as
-`demo_actions_are_expert` states that semantic explicitly. Schema-compatible
-saved replay should use a separate `replay_npz`-style adapter that preserves the
-saved fields as-is.
+Dataset adapter / canonicalization runs in the `build_buffers()` prefill path. Only `adapter: demo_actions_are_expert` copies demo `actions` into `expert_actions`; it leaves `learner_actions` and online-only gate score/log-prob metadata as NaN placeholders. `adapter: replay_npz` reads saved replay-like data and fills missing optional metadata with NaN/default placeholders.
 
 ## Demo Episode Insert Mode
 

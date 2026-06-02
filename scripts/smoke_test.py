@@ -17,6 +17,7 @@ from il.algo.bc.mlp import BCMLPAgent, get_config as get_bc_mlp_config
 from il.algo.rl.residual_rlpd import ResidualRLPDAgent, get_config as get_residual_rlpd_config
 from il.algo.rl.residual_td3 import ResidualTD3Agent, get_config as get_residual_td3_config
 from il.algo.rl.rlpd import ACRLPDAgent, get_config as get_rlpd_config
+from il.buffers.adapters import canonicalize_prefill_dataset
 from il.buffers.mixed import MixedReplaySampler, MixedSamplingSpec, ReplayBufferCollection
 from il.buffers.replay_buffer import ReplayBuffer
 from il.buffers.routing import route_episode_to_buffers
@@ -31,6 +32,7 @@ from il.loops.rollout import choose_rollout_action, prepare_next_base_action, re
 from il.loops.updates import _assert_residual_metadata
 from il.policies.bc_flow import BCFlowPolicy
 from il.policies.rlpd import RLPDPolicy
+from il.utils.types import ControllerId, GateReason
 from il.utils.config import TrainingConfig
 from il.utils.flax_utils import save_agent
 from il.utils.updates import sample_rl_update_batch
@@ -593,7 +595,7 @@ def smoke_replay_prefill() -> None:
                     "online_size": 8,
                     "intervention_size": 8,
                     "demo_size": 8,
-                    "prefill": {"demo": {"path": str(path), "format": "npz"}},
+                    "prefill": {"demo": str(path)},
                 }
             },
             env_spec=env_spec,
@@ -612,6 +614,30 @@ def smoke_replay_prefill() -> None:
     assert np.all(batch["observations"]["agentview"][:, 0, 0, 0] == np.asarray([1, 2, 3]))
     assert np.all(batch["next_observations"]["agentview"][:, 0, 0, 0] == np.asarray([2, 3, 0]))
     assert np.allclose(batch["image_next_valid"], np.asarray([1.0, 1.0, 0.0], dtype=np.float32))
+
+
+def smoke_demo_actions_are_expert_adapter() -> None:
+    """Check raw demo actions are explicitly canonicalized as expert labels."""
+    dataset = {
+        "observations": np.zeros((3, 5), dtype=np.float32),
+        "actions": np.arange(6, dtype=np.float32).reshape(3, 2),
+        "rewards": np.zeros(3, dtype=np.float32),
+        "terminals": np.asarray([0.0, 0.0, 1.0], dtype=np.float32),
+        "masks": np.asarray([1.0, 1.0, 0.0], dtype=np.float32),
+        "next_observations": np.ones((3, 5), dtype=np.float32),
+        "episode_ids": np.full(3, 7, dtype=np.int64),
+        "episode_steps": np.arange(3, dtype=np.int32),
+    }
+
+    canonical = canonicalize_prefill_dataset(dataset, adapter="demo_actions_are_expert")
+
+    assert np.allclose(canonical["actions"], dataset["actions"])
+    assert np.allclose(canonical["expert_actions"], dataset["actions"])
+    assert np.isnan(canonical["learner_actions"]).all()
+    assert np.all(canonical["controller_ids"] == int(ControllerId.EXPERT))
+    assert np.all(canonical["gating_reasons"] == int(GateReason.NONE))
+    assert np.isnan(canonical["gating_scores"]).all()
+    assert np.all(canonical["interventions"] == 0)
 
 
 def make_update_batch(batch_size: int, obs_dim: int, action_dim: int, horizon: int) -> dict:
@@ -1273,6 +1299,8 @@ def main() -> None:
     print("mixed replay sampling smoke ok")
     smoke_replay_prefill()
     print("replay prefill smoke ok")
+    smoke_demo_actions_are_expert_adapter()
+    print("demo actions adapter smoke ok")
     smoke_residual_base_action_cache()
     print("residual base action cache smoke ok")
     smoke_rlpd(args.obs_dim, args.action_dim)

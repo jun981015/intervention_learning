@@ -62,14 +62,12 @@ bc flow policy checkpoint smoke ok
 1. residual+intervention gate 조합을 실제 Robomimic config에서 build-only와 짧은 rollout으로 검증한다.
 2. 새 residual family 전에 `il/builders/actors.py`의 residual kind literal set을 registry/spec로 정리한다.
 3. `PolicyOutput.info`의 residual/chunk metadata contract를 typed helper나 작은 dataclass로 정리한다.
-4. offline demo/prefill dataset adapter와 canonicalization interface를 추가한다.
-5. replay save/load round-trip test를 실제 env 산출물까지 포함해 보강한다.
+4. replay save/load round-trip test를 실제 env 산출물까지 포함해 보강한다.
 
 ## 아직 안 된 것
 
 - residual+intervention gate real-env build-only / short rollout smoke
 - replay buffer save/load round-trip test
-- dataset adapter / canonicalization interface
 - residual family registry / `AgentSpec` 정리
 - `PolicyOutput.info` metadata contract 정리
 - learner/expert 일반 action chunk queue

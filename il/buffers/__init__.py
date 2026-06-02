@@ -6,6 +6,7 @@ streams. It should not sample actions, call environments, or update networks.
 """
 
 from il.buffers.mixed import MixedReplaySampler, MixedSamplingSpec, ReplayBufferCollection
+from il.buffers.adapters import canonicalize_prefill_dataset
 from il.buffers.replay_buffer import ReplayBuffer, load_npz_dataset
 from il.buffers.robomimic import load_robomimic_lowdim_replay_dataset
 from il.buffers.routing import add_episode_to_buffer, route_episode_to_buffers
@@ -17,6 +18,7 @@ __all__ = [
     "ReplayBuffer",
     "ReplayBufferCollection",
     "add_episode_to_buffer",
+    "canonicalize_prefill_dataset",
     "load_npz_dataset",
     "load_robomimic_lowdim_replay_dataset",
     "make_replay_example",

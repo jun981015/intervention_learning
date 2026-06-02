@@ -90,18 +90,15 @@ schema로 변환해야 한다. 이 작업은 offline demo prefill과 DAgger/BC t
 - transition schema: [REPLAY_AND_UPDATES.md#transition-schema](REPLAY_AND_UPDATES.md#transition-schema)
 - buffer 역할: [PIPELINE.md#buffer-역할](PIPELINE.md#buffer-역할)
 
-결정해야 할 것:
+구현 상태:
 
-- `adapter: replay_npz`는 schema-compatible saved replay만 그대로 로드한다.
-- `adapter: demo_actions_are_expert` 같은 명시적 adapter에서만 `expert_actions = actions`를 채운다.
-- raw robomimic hdf5, saved replay npz, intervention replay npz를 각각 어떤 adapter로 둘지 정한다.
-- missing `learner_actions`, log-prob, controller/gate metadata를 어떤 default로 채울지 정한다.
-- adapter 적용 위치는 `build_buffers()` prefill 경로가 자연스럽다.
+- `adapter: replay_npz`는 schema-compatible saved replay만 그대로 검증해서 로드한다.
+- `adapter: demo_actions_are_expert`에서만 raw demo `actions`를 `expert_actions`로 채운다.
+- raw Robomimic HDF5 demo config들은 `format: robomimic_hdf5`, `adapter: demo_actions_are_expert`를 명시한다.
+- saved replay `.npz`는 `format: npz`, `adapter: replay_npz`를 명시한다.
+- `demo_actions_are_expert`의 `learner_actions`, gate score, action log-prob은 NaN placeholder로 둔다. `controller_ids`는 expert, `interventions`는 offline demo라 0으로 둔다.
+- adapter 적용 위치는 `build_buffers()` prefill 경로다.
 
-주의:
-
-- dataset semantics 없이 loader 내부에서 `actions -> expert_actions`를 자동 복사하지 않는다.
-- `target_action_key="expert_actions"` update를 쓰는 prefill dataset은 adapter 단계에서 finite expert labels를 보장해야 한다.
 
 ### 3. Online rollout smoke를 실제 Robomimic env에서 검증
 

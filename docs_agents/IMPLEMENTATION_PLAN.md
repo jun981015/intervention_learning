@@ -57,16 +57,14 @@ bc flow policy checkpoint smoke ok
 ## Next Implementation Steps
 
 1. Run a real Robomimic build-only and short rollout for residual+intervention gate, starting with a random gate before `expert_q_gap`.
-2. Add explicit dataset adapters for offline demo/prefill canonicalization.
-3. Add replay save/load round-trip tests, including real-env generated replay files.
-4. Replace duplicated residual-kind checks with a small actor/agent registry before adding another residual family.
-5. Decide whether the next gate family can fit the current `ControllerGate` Protocol or needs a `GateContext`.
+2. Add replay save/load round-trip tests, including real-env generated replay files.
+3. Replace duplicated residual-kind checks with a small actor/agent registry before adding another residual family.
+4. Decide whether the next gate family can fit the current `ControllerGate` Protocol or needs a `GateContext`.
 
 ## Pending Risks
 
 - Residual+intervention gate wiring has only dummy-policy smoke coverage; run real-env build-only and short rollout before long jobs.
 - Replay save/load round-trip test is missing.
-- Dataset semantics are still partly implicit in the Robomimic prefill loader.
 - `keep_last` is intentionally not wired; `storage.store_*` remains mostly declarative rather than controlling canonical replay writes.
 - General learner/expert action chunk queues are not implemented.
 - `PolicyOutput.info` still carries implicit contracts for chunk and residual metadata.

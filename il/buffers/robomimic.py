@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Robomimic dataset adapters for canonical replay buffers."""
+"""Robomimic dataset loaders for replay prefill adapters."""
 
 from pathlib import Path
 
@@ -32,12 +32,11 @@ def load_robomimic_lowdim_replay_dataset(
     reward_scale: float = 1.0,
     reward_shift: float = 0.0,
 ) -> dict[str, np.ndarray]:
-    """Load robomimic low-dim demos into the canonical replay schema.
+    """Load robomimic low-dim demos without assigning controller semantics.
 
-    Demo actions are copied into `actions`, `learner_actions`, and
-    `expert_actions`. Episode boundaries are the HDF5 demo boundaries rather
-    than every positive `dones` entry, because robomimic demos may keep several
-    final success-labelled frames.
+    Episode boundaries are the HDF5 demo boundaries rather than every positive
+    `dones` entry, because robomimic demos may keep several final
+    success-labelled frames.
     """
     dataset_path = Path(path).expanduser()
     if not dataset_path.exists():
@@ -100,26 +99,13 @@ def load_robomimic_lowdim_replay_dataset(
     masks_arr = np.concatenate(masks, axis=0).astype(np.float32)
     episode_ids_arr = np.concatenate(episode_ids, axis=0).astype(np.int64)
     episode_steps_arr = np.concatenate(episode_steps, axis=0).astype(np.int32)
-    n = int(actions_arr.shape[0])
-
     return {
         "observations": observations_arr,
         "actions": actions_arr,
-        "learner_actions": actions_arr.copy(),
-        "expert_actions": actions_arr.copy(),
-        "base_actions": np.full_like(actions_arr, np.nan, dtype=np.float32),
-        "residual_actions": np.full_like(actions_arr, np.nan, dtype=np.float32),
-        "next_base_actions": np.full_like(actions_arr, np.nan, dtype=np.float32),
         "rewards": rewards_arr,
         "terminals": terminals_arr,
         "masks": masks_arr,
         "next_observations": next_observations_arr,
-        "controller_ids": np.zeros(n, dtype=np.int8),
         "episode_ids": episode_ids_arr,
         "episode_steps": episode_steps_arr,
-        "gating_reasons": np.zeros(n, dtype=np.int16),
-        "gating_scores": np.zeros(n, dtype=np.float32),
-        "learner_action_log_probs": np.full(n, np.nan, dtype=np.float32),
-        "expert_action_log_probs": np.full(n, np.nan, dtype=np.float32),
-        "interventions": np.zeros(n, dtype=np.int8),
     }

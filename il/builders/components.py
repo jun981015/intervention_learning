@@ -11,6 +11,7 @@ from gymnasium import spaces
 from il.buffers import (
     ReplayBuffer,
     ReplayBufferCollection,
+    canonicalize_prefill_dataset,
     load_npz_dataset,
     load_robomimic_lowdim_replay_dataset,
     make_replay_example,
@@ -185,14 +186,17 @@ def build_buffers(config: dict[str, Any], *, env_spec: EnvSpec, base_actor: Acto
         if spec is None:
             return ReplayBuffer.create(example, size, frame_stack=frame_stack)
         if isinstance(spec, str):
-            spec = {"path": spec}
+            spec = {"path": spec, "format": "npz"}
         fmt = spec.get("format", "npz")
+        adapter = spec.get("adapter")
         if fmt == "npz":
+            adapter = adapter or "replay_npz"
             dataset = load_npz_dataset(
                 spec["path"],
                 max_transitions=spec.get("max_transitions"),
             )
         elif fmt in {"robomimic", "robomimic_lowdim", "robomimic_hdf5"}:
+            adapter = adapter or "demo_actions_are_expert"
             env_cfg = config.get("env", {})
             dataset = load_robomimic_lowdim_replay_dataset(
                 spec["path"],
@@ -203,6 +207,7 @@ def build_buffers(config: dict[str, Any], *, env_spec: EnvSpec, base_actor: Acto
             )
         else:
             raise ValueError(f"Unsupported replay prefill format for {name}: {fmt!r}")
+        dataset = canonicalize_prefill_dataset(dataset, adapter=str(adapter))
         if bool(spec.get("cache_base_actions", False)):
             dataset = _cache_residual_base_actions(
                 dataset,
