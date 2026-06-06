@@ -269,6 +269,29 @@ env와 replay는 image observation 저장을 지원하지만, actor/critic netwo
 - discriminator/novelty gate.
 - human keyboard/UI gate.
 
+아이디어: human button을 직접 teleop 시작 신호로 쓰지 않고, 자동 recovery trigger로 쓴다.
+
+- 사람이 개입 버튼을 누르면 현재 state 근처의 data-distribution goal을 선택한다.
+- goal은 demo/offline/online replay에서 현재 state와 가까운 state를 찾거나, learned embedding에서 nearest neighbor로 고른다.
+- 실행 controller는 사람이 직접 조종하는 teleop policy가 아니라 goal-conditioned RL policy다.
+- GCRL policy는 `pi(a | s, g)` 형태로 현재 state에서 선택된 goal state로 돌아가도록 행동한다.
+- intervention 종료 조건은 goal 도달, timeout, safety fallback, 또는 사람이 다시 버튼을 누르는 방식 중에서 정해야 한다.
+- replay에는 `controller_id`, `gate_reason`, `goal_state` 또는 `goal_id`, recovery success/failure를 남겨야 한다.
+- learner policy가 env를 도는 동안 GCRL recovery policy는 demo/offline/online replay data로 background update를 계속 받는다.
+- GCRL은 task success 하나만 배우기보다 data manifold 안의 임의 future state로 돌아가는 local recovery skill로 둔다.
+- 학습은 HER처럼 trajectory 안의 future state를 goal로 relabeling해서 `Q(s, a, g)`와 `pi(a | s, g)`를 학습하는 방향이 자연스럽다.
+- 구조상 `actors.recovery` 또는 recovery controller family를 별도로 두고, `updates.recovery_gcrl`이 learner update와 병렬로 돈다.
+- recovery를 expert로 라벨링하면 분석이 꼬일 수 있으므로, 실제 구현 시 `ControllerId.RECOVERY`와 replay schema 확장이 필요할 가능성이 높다.
+- 나중에는 human button뿐 아니라 uncertainty/Q/disagreement gate도 같은 recovery controller를 호출할 수 있다.
+
+열어둔 질문:
+
+- "현재 state와 가까움"을 low-dim state L2로 볼지, learned embedding 거리로 볼지 정해야 한다.
+- goal 후보를 expert/demo distribution에서만 고를지, successful online replay까지 포함할지 정해야 한다.
+- GCRL policy를 별도 expert controller로 볼지, gate가 호출하는 recovery controller family로 볼지 정해야 한다.
+- recovery 중 learner/expert proposal을 계속 저장할지, recovery controller proposal만 저장할지 정해야 한다.
+- 실패 시 expert teleop, scripted reset, episode terminate 중 어떤 fallback을 둘지 정해야 한다.
+
 
 ### 10. Logger metric 확장
 
