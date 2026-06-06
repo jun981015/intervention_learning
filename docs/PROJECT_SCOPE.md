@@ -18,7 +18,7 @@
 - expert와 learner는 같은 policy/algorithm interface를 공유한다.
 - 매 step learner action과 expert action을 둘 다 뽑아서 저장한다.
 - gating function은 어떤 controller를 실행할지 결정한다.
-- 초기 gating smoke는 random probability gate로 시작했고, 현재는 expert-Q gap intervention gate도 포함한다.
+- 초기 gating smoke는 random probability gate로 시작했고, 현재는 expert-Q gap과 action uncertainty intervention gate도 포함한다.
 - 초기 expert baseline은 RLPD checkpoint를 load한 policy로 둔다.
 - diffusion/flow-matching weight는 나중에 BC actor 또는 expert 후보로 쓸 수 있게 둔다.
 - grad clipping은 기본적으로 끈다. 필요한 실험에서만 `grad_clip_norm`을 명시한다.
@@ -29,7 +29,7 @@
 - Environment: `square-mh-low_dim`
 - Learner: RLPD/SAC-style online learner
 - Expert: restored RLPD/SAC checkpoint policy
-- Gate: random probability gate, expert-Q gap intervention gate
+- Gate: random probability gate, expert-Q gap intervention gate, sample-variance action uncertainty gate
 - Replay: online/demo/intervention buffers, executed action, learner proposal, expert proposal, controller id, gate metadata, log-probs
 - Mixed sampling: `online`, `intervention`, `demo` buffer를 config 비율대로 섞어 batch 구성
 - N-step backup: `sample_sequence(batch_size, sequence_length, discount)` API 유지
@@ -46,11 +46,11 @@
 - OGBench/cube tasks
 - Human keyboard/UI intervention
 - Action chunking support
-- Q/uncertainty/disagreement 기반 새 gate family는 별도 설계 후 추가한다.
+- SAC analytic std, BC ensemble disagreement, discriminator/novelty 기반 gate는 별도 설계 후 추가한다.
 
 ## 현재 Scaffold
 
-- `il/gating/`: controller gate interface, random gate, expert-Q gap gate
+- `il/gating/`: controller gate interface, random gate, expert-Q gap gate, action-uncertainty gate
 - `il/policies/`: learner/expert가 공유하는 minimal policy protocol
 - `il/buffers/`: replay buffer, transition schema, episode routing
 - `il/datasets/`: offline dataset loader와 transform용 예약 폴더

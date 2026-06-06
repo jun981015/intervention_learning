@@ -9,6 +9,7 @@ import jax
 import numpy as np
 
 from il.builders.types import ActorBundle, TrainContext
+from il.gating.base import GateContext
 from il.utils.types import ControllerId, GateDecision, GateReason, PolicyOutput
 
 
@@ -308,6 +309,105 @@ def _sample_action_proposals(
     return learner_output, expert_output
 
 
+def _sample_fresh_residual_learner_proposal(
+    context: TrainContext,
+    policy_obs,
+    *,
+    step: int,
+    base_rng,
+    residual_rng,
+) -> PolicyOutput:
+    """Sample a residual-composed learner proposal without consuming the base queue."""
+    base_output = _sample_actor(
+        context.base,
+        policy_obs,
+        rng=base_rng,
+        action_dim=context.action_dim,
+        reason_if_missing="base_not_sampled",
+    )
+    if not np.isfinite(np.asarray(base_output.action, dtype=np.float32)).all():
+        raise ValueError("residual uncertainty sampling requires a finite base action.")
+    return _compose_residual_learner_proposal(
+        context,
+        policy_obs,
+        step=step,
+        base_output=base_output,
+        residual_rng=residual_rng,
+    )
+
+
+def _sample_gate_policy_source(
+    context: TrainContext,
+    source: str,
+    policy_obs,
+    *,
+    step: int,
+    rng,
+    learner_output: PolicyOutput,
+) -> PolicyOutput:
+    """Sample one gate diagnostic policy source without advancing rollout queues."""
+    if source == "learner":
+        if uses_residual_composition(context):
+            base_rng, residual_rng = jax.random.split(rng)
+            return _sample_fresh_residual_learner_proposal(
+                context,
+                policy_obs,
+                step=step,
+                base_rng=base_rng,
+                residual_rng=residual_rng,
+            )
+        return _sample_actor(
+            context.learner,
+            policy_obs,
+            rng=rng,
+            action_dim=context.action_dim,
+            reason_if_missing="learner_not_sampled",
+        )
+    if source == "expert":
+        return _sample_expert_proposal(
+            context,
+            policy_obs,
+            rng=rng,
+            base_action=learner_output.info.get("base_action"),
+        )
+    if source == "base":
+        return _sample_actor(
+            context.base,
+            policy_obs,
+            rng=rng,
+            action_dim=context.action_dim,
+            reason_if_missing="base_not_sampled",
+        )
+    raise ValueError(f"Unsupported gate policy source: {source!r}")
+
+
+def _make_gate_context(
+    context: TrainContext,
+    policy_obs,
+    *,
+    step: int,
+    learner_output: PolicyOutput,
+) -> GateContext:
+    """Build optional rollout access for gates that compute policy diagnostics."""
+
+    def sample_policy(source: str) -> PolicyOutput:
+        context.rng, sample_rng = jax.random.split(context.rng)
+        return _sample_gate_policy_source(
+            context,
+            source,
+            policy_obs,
+            step=step,
+            rng=sample_rng,
+            learner_output=learner_output,
+        )
+
+    return GateContext(
+        sample_policy=sample_policy,
+        policy_observation=policy_obs,
+        action_dim=context.action_dim,
+    )
+
+
 def _decide_controller(
     context: TrainContext,
     policy_obs,
@@ -321,6 +421,12 @@ def _decide_controller(
     if execute == "gate":
         if context.gate is None:
             raise ValueError("rollout.execute='gate' requires a configured gate.")
+        gate_context = _make_gate_context(
+            context,
+            policy_obs,
+            step=step,
+            learner_output=learner_output,
+        )
         return context.gate.decide(
             step=step,
             observation=policy_obs,
@@ -329,6 +435,7 @@ def _decide_controller(
             rng=context.gate_rng,
             expert_agent=context.expert.agent if context.expert is not None else None,
             action_dim=context.action_dim,
+            context=gate_context,
         )
     if execute == "learner":
         return _fixed_decision(ControllerId.LEARNER, reason="learner")
@@ -384,20 +491,16 @@ def _residual_warmup_output(context: TrainContext, base_action: np.ndarray, *, r
     )
 
 
-def _sample_residual_learner_proposal(
+
+def _compose_residual_learner_proposal(
     context: TrainContext,
-    observation,
     policy_obs,
     *,
     step: int,
-    base_rng,
+    base_output: PolicyOutput,
     residual_rng,
 ) -> PolicyOutput:
-    """Return the learner's full residual-composed action proposal."""
-    if context.base is None:
-        raise ValueError("residual action composition requires a built base actor.")
-
-    base_output = sample_base_action(context, observation, rng=base_rng)
+    """Compose a base action and residual learner output into an executable action."""
     residual_scale = resolve_residual_scale(context)
     base_action = np.asarray(base_output.action, dtype=np.float32)
 
@@ -409,7 +512,7 @@ def _sample_residual_learner_proposal(
         step=step,
     )
     if raw_residual_output is None:
-        residual_obs = residual_policy_observation(policy_obs, base_output.action)
+        residual_obs = residual_policy_observation(policy_obs, base_action)
         raw_residual_output = _sample_actor(
             context.learner,
             residual_obs,
@@ -439,6 +542,29 @@ def _sample_residual_learner_proposal(
             "base_kind": context.base.kind,
             "base_checkpoint_path": str(context.base.checkpoint_path) if context.base.checkpoint_path else "",
         },
+    )
+
+
+def _sample_residual_learner_proposal(
+    context: TrainContext,
+    observation,
+    policy_obs,
+    *,
+    step: int,
+    base_rng,
+    residual_rng,
+) -> PolicyOutput:
+    """Return the learner's full residual-composed action proposal."""
+    if context.base is None:
+        raise ValueError("residual action composition requires a built base actor.")
+
+    base_output = sample_base_action(context, observation, rng=base_rng)
+    return _compose_residual_learner_proposal(
+        context,
+        policy_obs,
+        step=step,
+        base_output=base_output,
+        residual_rng=residual_rng,
     )
 
 

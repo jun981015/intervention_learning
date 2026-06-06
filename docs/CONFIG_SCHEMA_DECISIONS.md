@@ -318,6 +318,39 @@ if signal: expert intervention starts with probability intervention_prob
 - 이 gate는 RLPD 전용이 아니다. SAC, TD3-BC 등도 adapter가 위 API를 맞추면 같은 방식으로 쓸 수 있다.
 - PPO처럼 value-only critic만 있는 expert는 `Q(s, a_expert) - Q(s, a_learner)`를 계산할 수 없으므로 action-value head 또는 별도 adapter가 필요하다.
 
+action uncertainty gate 예시:
+
+```yaml
+intervention:
+  enabled: true
+  expert_query: always
+  gate:
+    kind: action_uncertainty
+    source: learner
+    estimator: sample_variance
+    num_samples: 8
+    score: rms_std
+    threshold: 0.15
+    intervention_prob: 1.0
+    intervention_horizon: 10
+```
+
+`action_uncertainty` 의미:
+
+```text
+samples = [pi_source(s; rng_i) for i in 1..num_samples]
+score = sqrt(mean(var(samples, axis=sample)))
+signal = score > threshold
+if signal: expert intervention starts with probability intervention_prob
+```
+
+- 현재 구현된 estimator는 `sample_variance` 하나다.
+- `source`는 `learner`, `expert`, `base`를 지원한다. `base`는 residual rollout에서 base policy uncertainty를 따로 볼 때 쓴다.
+- `score`는 현재 `rms_std`만 지원한다. action dimension별 variance 평균의 square root를 gate score로 기록한다.
+- 이 score는 executed action space 기준 variance다. Diffusion/flow BC처럼 analytic std가 없는 policy에도 적용할 수 있고, SAC/RLPD처럼 stochastic actor가 있는 policy에도 적용할 수 있다.
+- SAC actor의 analytic `log_std` / entropy, BC ensemble disagreement 같은 backend는 아직 구현하지 않았다. 같은 gate family의 estimator로 추가하는 것이 다음 확장 방향이다.
+- gate가 policy를 여러 번 다시 샘플링해야 하므로 rollout은 `GateContext`를 통해 policy diagnostic sampler를 넘긴다. 이 diagnostic sampling은 env를 step하거나 replay를 쓰지 않는다.
+
 ### `storage`
 
 rollout에서 나온 정보를 replay에 무엇까지 저장할지 정한다.

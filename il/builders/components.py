@@ -17,7 +17,7 @@ from il.buffers import (
     make_replay_example,
 )
 from il.builders.types import ActorBundle, EnvSpec
-from il.gating import ControllerGate, ExpertQGapGate, RandomGate
+from il.gating import ActionUncertaintyGate, ControllerGate, ExpertQGapGate, RandomGate
 from il.loops.rollout import prepare_next_base_action, reset_rollout_state, sample_base_action
 
 
@@ -246,6 +246,18 @@ def build_gate(config: dict[str, Any]) -> ControllerGate | None:
                 intervention_prob=float(gate_cfg.get("intervention_prob", 1.0)),
                 intervention_horizon=int(gate_cfg.get("intervention_horizon", 1)),
                 q_agg=str(gate_cfg.get("q_agg", "min")),
+            )
+        )
+    if kind == "action_uncertainty":
+        return _validate_gate(
+            ActionUncertaintyGate(
+                threshold=float(gate_cfg["threshold"]),
+                source=str(gate_cfg.get("source", "learner")),
+                estimator=str(gate_cfg.get("estimator", "sample_variance")),
+                num_samples=int(gate_cfg.get("num_samples", 8)),
+                score=str(gate_cfg.get("score", "rms_std")),
+                intervention_prob=float(gate_cfg.get("intervention_prob", 1.0)),
+                intervention_horizon=int(gate_cfg.get("intervention_horizon", 1)),
             )
         )
     raise ValueError(f"Unsupported gate kind: {kind!r}")

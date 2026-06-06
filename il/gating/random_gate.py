@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 
+from il.gating.base import GateContext
 from il.utils.types import ControllerId, GateDecision, GateReason, PolicyOutput
 
 
@@ -33,9 +34,10 @@ class RandomGate:
         rng: np.random.Generator,
         expert_agent: Any | None = None,
         action_dim: int | None = None,
+        context: GateContext | None = None,
     ) -> GateDecision:
         """Ignore policy contents and route to expert with fixed probability."""
-        del step, observation, learner, expert, expert_agent, action_dim
+        del step, observation, learner, expert, expert_agent, action_dim, context
         sample = float(rng.random())
         use_expert = sample < self.expert_probability
         return GateDecision(

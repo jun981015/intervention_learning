@@ -22,8 +22,9 @@ from il.buffers.mixed import MixedReplaySampler, MixedSamplingSpec, ReplayBuffer
 from il.buffers.replay_buffer import ReplayBuffer
 from il.buffers.routing import route_episode_to_buffers
 from il.buffers.schema import make_replay_example, step_record_to_transition
-from il.builders.components import _cache_residual_base_actions, build_buffers, infer_env_spec
+from il.builders.components import _cache_residual_base_actions, build_buffers, build_gate, infer_env_spec
 from il.builders.config import new_schema_to_legacy_recipe
+from il.gating.action_uncertainty import ActionUncertaintyGate
 from il.gating.expert_q_gap import ExpertQGapGate
 from il.gating.random_gate import RandomGate
 from il.envs.robomimic_lowdim import RobomimicLowdimWrapper
@@ -47,6 +48,19 @@ class ConstantPolicy:
     def sample_action(self, observation: np.ndarray, *, rng) -> PolicyOutput:
         del observation, rng
         return PolicyOutput(action=self.action.copy(), log_prob=self.log_prob)
+
+
+class NoisyPolicy:
+    def __init__(self, action_dim: int, *, scale: float):
+        self.action_dim = int(action_dim)
+        self.scale = float(scale)
+        self.calls = 0
+
+    def sample_action(self, observation: np.ndarray, *, rng) -> PolicyOutput:
+        del observation
+        self.calls += 1
+        action = np.asarray(jax.random.normal(rng, (self.action_dim,)) * self.scale, dtype=np.float32)
+        return PolicyOutput(action=action, log_prob=float("nan"))
 
 
 class FakeRobomimicEnv:
@@ -1094,6 +1108,39 @@ def smoke_bc_flow_chunk_valid_handling(obs_dim: int, action_dim: int) -> None:
         raise AssertionError("chunked BCFlow should reject primitive single-step targets for horizon > 1")
 
 
+def smoke_action_uncertainty_gate() -> None:
+    """Check sample-variance gate resamples learner actions through rollout context."""
+    learner_policy = NoisyPolicy(action_dim=2, scale=0.5)
+    expert_policy = ConstantPolicy(np.full(2, 0.25, dtype=np.float32))
+    context = SimpleNamespace(
+        learner=SimpleNamespace(policy=learner_policy, config={}, agent=None),
+        expert=SimpleNamespace(policy=expert_policy, config={}, agent=None),
+        base=None,
+        gate=ActionUncertaintyGate(threshold=1e-6, num_samples=4, intervention_prob=1.0),
+        gate_rng=np.random.default_rng(0),
+        rng=jax.random.PRNGKey(0),
+        action_dim=2,
+        env_spec=SimpleNamespace(state_key=None),
+        rollout_state={},
+        config={"rollout": {"execute": "gate", "sample_learner": True, "sample_expert": True}},
+    )
+
+    action, learner_output, expert_output, decision = choose_rollout_action(
+        context,
+        np.zeros(5, dtype=np.float32),
+        step=0,
+    )
+
+    assert decision.use_expert
+    assert decision.reason == GateReason.ACTION_UNCERTAINTY
+    assert decision.info["estimator"] == "sample_variance"
+    assert decision.info["num_samples"] == 4
+    assert decision.score > 0.0
+    assert learner_policy.calls == 5
+    assert np.allclose(action, expert_output.action)
+    assert not np.allclose(learner_output.action, expert_output.action)
+
+
 def smoke_config_sequence_length_semantics() -> None:
     """Check public replay sampling sequence length does not overwrite actor chunk horizon."""
     recipe = new_schema_to_legacy_recipe(
@@ -1114,6 +1161,38 @@ def smoke_config_sequence_length_semantics() -> None:
     assert recipe["learner"]["config"]["horizon_length"] == 5
     assert recipe["updates"][0]["sequence_length"] == 1
     assert "horizon_length" not in recipe["updates"][0]
+
+
+def smoke_action_uncertainty_config_semantics() -> None:
+    """Check public action-uncertainty gate config reaches the gate builder."""
+    recipe = new_schema_to_legacy_recipe(
+        {
+            "experiment": {"name": "smoke", "seed": 0},
+            "env": {"kind": "robomimic", "name": "square-mh-low_dim"},
+            "actors": {
+                "learner": {"kind": "bc_flow"},
+                "expert": {"kind": "rlpd", "pretrained_path": "dummy"},
+            },
+            "training": {"total_steps": 1},
+            "replay": {"sampling": {"bc": {"source": "online"}}},
+            "intervention": {
+                "enabled": True,
+                "gate": {
+                    "kind": "action_uncertainty",
+                    "source": "learner",
+                    "estimator": "sample_variance",
+                    "num_samples": 4,
+                    "score": "rms_std",
+                    "threshold": 0.1,
+                },
+            },
+        }
+    )
+    assert recipe["gate"]["kind"] == "action_uncertainty"
+    assert recipe["gate"]["source"] == "learner"
+    assert recipe["gate"]["num_samples"] == 4
+    gate = build_gate(recipe)
+    assert isinstance(gate, ActionUncertaintyGate)
 
 
 def smoke_expert_query_semantics() -> None:
@@ -1279,12 +1358,16 @@ def main() -> None:
     print("reward transform smoke ok")
     smoke_gate_and_replay()
     print("gate/replay smoke ok")
+    smoke_action_uncertainty_gate()
+    print("action uncertainty gate smoke ok")
     smoke_base_action_chunk_queue()
     print("base action chunk queue smoke ok")
     smoke_residual_base_noise_warmup()
     print("residual base+noise warmup smoke ok")
     smoke_config_sequence_length_semantics()
     print("config sequence length semantics smoke ok")
+    smoke_action_uncertainty_config_semantics()
+    print("action uncertainty config semantics smoke ok")
     smoke_expert_query_semantics()
     print("expert query semantics smoke ok")
     smoke_expert_q_gap_nonfinite_fails()

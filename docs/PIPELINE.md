@@ -23,6 +23,7 @@ decision = gate.decide(
     learner=learner_output,
     expert=expert_output,
     rng=gate_rng,
+    context=gate_context,  # optional: only diagnostic gates use this
 )
 
 action = expert_output.action if decision.use_expert else learner_output.action
@@ -31,6 +32,11 @@ next_obs, reward, terminated, truncated, info = env.step(action)
 
 learner와 expert action을 gate 전에 둘 다 뽑는 것이 중요하다. 그래야 같은 state에서
 learner proposal, expert proposal, 실제 실행 action을 모두 저장할 수 있다.
+
+`GateContext`는 uncertainty처럼 policy를 다시 샘플링해야 하는 diagnostic gate용 optional context다. 기존
+random gate와 expert-Q gap gate는 이미 샘플된 proposal만으로 결정할 수 있지만, `action_uncertainty`는
+같은 observation에서 source policy를 여러 번 다시 샘플링해야 한다. 이 재샘플링은 env step, replay write,
+network update를 하지 않는다.
 
 
 ## Expert-Q Gap Gate
@@ -61,6 +67,25 @@ Expert agent/adapter 책임:
 
 SAC/RLPD, TD3-BC처럼 action-value critic이 있는 expert는 agent/adapter에서 이 API를 맞추면 같은 방식으로 쓸 수 있다. PPO처럼 V-only critic만
 있는 expert는 이 gate를 바로 쓸 수 없고 action-value head 또는 adapter가 필요하다.
+
+## Action-Uncertainty Gate
+
+`action_uncertainty`는 같은 observation에서 하나의 policy source를 여러 번 샘플링하고 action variance가
+threshold를 넘으면 expert intervention을 시작한다.
+
+```text
+samples = [pi_source(s; rng_i) for i in 1..num_samples]
+score = sqrt(mean(var(samples, axis=sample)))
+signal = score > threshold
+```
+
+현재 구현은 `estimator: sample_variance`, `score: rms_std`만 지원한다. `source`는 `learner`,
+`expert`, `base` 중 하나다. Diffusion/flow BC, SAC/RLPD stochastic actor처럼 같은 state에서 다른
+sample을 낼 수 있는 policy에 바로 쓸 수 있다. TD3처럼 deterministic actor는 exploration noise를 넣지
+않으면 score가 거의 0이 된다.
+
+SAC analytic std, policy entropy, BC ensemble variance는 아직 구현하지 않았다. 이들은 같은
+`action_uncertainty` gate family의 estimator backend로 추가한다.
 
 ## RLPD Expert Weight 로딩
 

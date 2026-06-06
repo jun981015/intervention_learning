@@ -252,8 +252,8 @@ env와 replay는 image observation 저장을 지원하지만, actor/critic netwo
 
 ### 9. Smarter gating / human UI
 
-현재는 random gate와 learner-only 실행이 기본이다. 실제 intervention 연구로 가려면 gate function을
-교체하기 쉬운 구조를 유지하면서 uncertainty, value, discriminator, human input 등을 붙인다.
+현재는 random gate, expert-Q gap gate, sample-variance action uncertainty gate가 있다. 실제 intervention 연구로 가려면 gate function을
+교체하기 쉬운 구조를 유지하면서 추가 uncertainty backend, value, discriminator, human input 등을 붙인다.
 
 - 초기 pipeline에서 gate 위치: [PIPELINE.md#step-logic](PIPELINE.md#step-logic)
 - buffer routing smoke: [PIPELINE.md#현재-smoke-test로-확인한-것](PIPELINE.md#현재-smoke-test로-확인한-것)
@@ -262,7 +262,10 @@ env와 replay는 image observation 저장을 지원하지만, actor/critic netwo
 후보:
 
 - random probability gate.
+- action uncertainty gate with `sample_variance` estimator. 구현됨.
 - value/Q uncertainty gate.
+- SAC analytic std / entropy estimator.
+- BC ensemble disagreement estimator.
 - discriminator/novelty gate.
 - human keyboard/UI gate.
 

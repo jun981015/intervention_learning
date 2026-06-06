@@ -8,6 +8,7 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 
+from il.gating.base import GateContext
 from il.utils.types import ControllerId, GateDecision, GateReason, PolicyOutput
 
 
@@ -136,9 +137,10 @@ class ExpertQGapGate:
         rng: np.random.Generator,
         expert_agent: Any | None = None,
         action_dim: int | None = None,
+        context: GateContext | None = None,
     ) -> GateDecision:
         """Route to expert probabilistically when expert-Q gap is large."""
-        del step
+        del step, context
         if self._remaining_steps > 0:
             return self._horizon_decision()
         if expert_agent is None:

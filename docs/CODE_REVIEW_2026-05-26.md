@@ -21,7 +21,7 @@
 | P0-2 residual_scale train/eval 불일치 | 해결 | `il/loops/rollout.py::resolve_residual_scale()`가 train rollout과 context eval에서 공유된다. |
 | P0-3 buffer 부족 예외 string match | 의도적으로 유지 | 사용자가 `BufferTooSmall` custom exception 제거를 요청했다. replay가 아직 `sequence_length`보다 작을 때는 기존 `"smaller than sequence_length"` `ValueError` 문자열 기반 skip을 유지한다. |
 | P1-1 residual rollout hardcoding | 부분 해결 | residual learner proposal 생성은 residual-only와 residual+gate path가 같은 helper를 쓴다. 다만 `rollout.execute == "residual"` 분기와 `PolicyOutput.info` key contract는 아직 남아 있다. |
-| P1-2 gate Protocol이 expert_agent 중심 | 부분 해결 | Protocol runtime contract는 정리했다. 다만 `decide(..., expert_agent=..., action_dim=...)` 시그니처는 아직 expert-agent 중심이다. `GateContext`는 learner/base/history가 필요한 새 gate family가 들어올 때 도입한다. |
+| P1-2 gate Protocol이 expert_agent 중심 | 부분 해결 | Protocol runtime contract는 정리했고, `GateContext`를 도입해서 learner/base/expert policy diagnostic sampling을 gate에 전달할 수 있다. 다만 기존 `decide(..., expert_agent=..., action_dim=...)` 시그니처와 `ExpertQGapGate`의 expert Q API 의존은 아직 남아 있다. |
 | P1-3 hasattr dispatch | 미해결 | critic-only update, Q API, policy sampling 쪽에 `hasattr` dispatch가 남아 있다. |
 | P1-4 residual kind set 중복 | 미해결 | `{"residual_rlpd", "residual_td3"}` literal set이 actor builder 여러 위치에 남아 있다. 새 residual family 추가 전 registry/spec 정리가 필요하다. |
 | P1-5 `PolicyOutput.info` implicit schema | 미해결 | `full_action_chunk`, `base_action`, `residual_action`, `raw_residual_action` 등 info key contract가 typed field/Protocol로 승격되지 않았다. |
@@ -31,8 +31,9 @@
 
 ```text
 1. residual+intervention gate real-env build-only / short rollout smoke를 먼저 돌린다.
-2. 새 residual family 전에 il/builders/actors.py의 residual kind literal set을 registry/spec로 정리한다.
-3. PolicyOutput.info의 residual/chunk metadata contract를 typed helper나 작은 dataclass로 정리한다.
+2. action uncertainty gate의 SAC analytic std / ensemble variance estimator를 추가할지 결정한다.
+3. 새 residual family 전에 il/builders/actors.py의 residual kind literal set을 registry/spec로 정리한다.
+4. PolicyOutput.info의 residual/chunk metadata contract를 typed helper나 작은 dataclass로 정리한다.
 ```
 
 ---

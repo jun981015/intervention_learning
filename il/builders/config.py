@@ -319,7 +319,7 @@ def new_schema_to_legacy_recipe(config: dict[str, Any]) -> dict[str, Any]:
     }
     if recipe["gate"]["kind"] == "random":
         recipe["gate"]["expert_probability"] = float(gate.get("expert_probability", gate.get("probability", 0.0)))
-    for key in ("threshold", "intervention_prob", "intervention_horizon", "q_agg"):
+    for key in ("threshold", "intervention_prob", "intervention_horizon", "q_agg", "source", "estimator", "num_samples", "score"):
         if key in gate:
             recipe["gate"][key] = copy.deepcopy(gate[key])
 

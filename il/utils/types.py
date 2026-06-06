@@ -20,6 +20,7 @@ class GateReason(IntEnum):
     NONE = 0
     RANDOM = 1
     EXPERT_Q_GAP = 2
+    ACTION_UNCERTAINTY = 3
 
 
 @dataclass(frozen=True)
