@@ -17,6 +17,9 @@
 
 ```text
 exp/pretrained/rlpd_square_bc03_seed0_2m/
+  params_100000.pkl
+  params_200000.pkl
+  ...
   params_2000000.pkl
   config.json
   metadata.json
@@ -25,7 +28,9 @@ exp/pretrained/rlpd_square_bc03_seed0_2m/
 용도:
 
 - expert policy 후보
-- square `bc_alpha=0.3` RLPD 2M checkpoint
+- square `bc_alpha=0.3` RLPD checkpoint sweep
+- `params_100000.pkl`부터 `params_2000000.pkl`까지 100k 단위 checkpoint가 있다.
+- `metadata.checkpoint_step`은 기본 restore용으로 `2000000`을 가리킨다. 다른 step을 쓰려면 actor config에서 `checkpoint_step`을 명시한다.
 
 source:
 

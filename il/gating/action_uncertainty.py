@@ -23,7 +23,7 @@ class ActionUncertaintyGate:
     intervention_prob: float = 1.0
     intervention_horizon: int = 1
     _remaining_steps: int = field(default=0, init=False)
-    _last_info: dict[str, float | int | str] = field(default_factory=dict, init=False)
+    _last_info: dict[str, Any] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         """Validate gate hyperparameters."""
@@ -65,7 +65,7 @@ class ActionUncertaintyGate:
             info=info,
         )
 
-    def _sample_action_variance(self, context: GateContext) -> tuple[float, dict[str, float | int | str]]:
+    def _sample_action_variance(self, context: GateContext) -> tuple[float, dict[str, Any]]:
         """Estimate action-space variance by resampling one policy source."""
         actions = []
         for _ in range(self.num_samples):
@@ -83,11 +83,18 @@ class ActionUncertaintyGate:
         samples = np.stack(actions, axis=0)
         variance = np.var(samples, axis=0)
         std = np.sqrt(np.maximum(variance, 0.0))
+        variance_mean = float(np.mean(variance))
+        variance_max = float(np.max(variance))
         uncertainty_score = float(np.sqrt(np.mean(variance)))
         return uncertainty_score, {
             "uncertainty_score": uncertainty_score,
-            "action_variance_mean": float(np.mean(variance)),
-            "action_variance_max": float(np.max(variance)),
+            "var": {
+                "per_dim": variance.astype(np.float32).tolist(),
+                "mean": variance_mean,
+                "max": variance_max,
+            },
+            "action_variance_mean": variance_mean,
+            "action_variance_max": variance_max,
             "action_std_mean": float(np.mean(std)),
             "action_std_max": float(np.max(std)),
             "num_samples": int(self.num_samples),
@@ -134,9 +141,7 @@ class ActionUncertaintyGate:
             "horizon_active": 0,
             "remaining_steps": self._remaining_steps,
         }
-        self._last_info = {
-            key: value for key, value in info.items() if isinstance(value, (int, float, str))
-        }
+        self._last_info = dict(info)
         return GateDecision(
             controller_id=ControllerId.EXPERT if start_intervention else ControllerId.LEARNER,
             reason=GateReason.ACTION_UNCERTAINTY,

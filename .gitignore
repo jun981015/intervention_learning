@@ -15,6 +15,7 @@ pids/
 videos/
 figures/
 analysis/
+diagnostics/
 wandb/
 
 *.log

@@ -347,6 +347,7 @@ if signal: expert intervention starts with probability intervention_prob
 - 현재 구현된 estimator는 `sample_variance` 하나다.
 - `source`는 `learner`, `expert`, `base`를 지원한다. `base`는 residual rollout에서 base policy uncertainty를 따로 볼 때 쓴다.
 - `score`는 현재 `rms_std`만 지원한다. action dimension별 variance 평균의 square root를 gate score로 기록한다.
+- `GateDecision.info["var"]`는 `per_dim`, `mean`, `max`를 담는 dict다. 기존 scalar logging용 `action_variance_mean` / `action_variance_max`도 유지한다.
 - 이 score는 executed action space 기준 variance다. Diffusion/flow BC처럼 analytic std가 없는 policy에도 적용할 수 있고, SAC/RLPD처럼 stochastic actor가 있는 policy에도 적용할 수 있다.
 - SAC actor의 analytic `log_std` / entropy, BC ensemble disagreement 같은 backend는 아직 구현하지 않았다. 같은 gate family의 estimator로 추가하는 것이 다음 확장 방향이다.
 - gate가 policy를 여러 번 다시 샘플링해야 하므로 rollout은 `GateContext`를 통해 policy diagnostic sampler를 넘긴다. 이 diagnostic sampling은 env를 step하거나 replay를 쓰지 않는다.

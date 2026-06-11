@@ -1135,6 +1135,8 @@ def smoke_action_uncertainty_gate() -> None:
     assert decision.reason == GateReason.ACTION_UNCERTAINTY
     assert decision.info["estimator"] == "sample_variance"
     assert decision.info["num_samples"] == 4
+    assert len(decision.info["var"]["per_dim"]) == 2
+    assert np.isclose(decision.info["var"]["mean"], decision.info["action_variance_mean"])
     assert decision.score > 0.0
     assert learner_policy.calls == 5
     assert np.allclose(action, expert_output.action)
